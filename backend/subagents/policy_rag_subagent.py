@@ -91,8 +91,8 @@ async def retrieve_policy_context(
 ) -> Dict[str, Any]:
     """
     Retrieve policy/rights information.
-    1. Tavily web search on trusted German policy domains
-    2. Static knowledge base
+    1. Tavily web search on trusted German policy domains.
+    2. Static fallback disabled.
     """
     context_chunks: List[str] = []
     sources: List[Dict] = []
@@ -109,12 +109,8 @@ async def retrieve_policy_context(
     except Exception as e:
         logger.warning(f"Policy web search failed: {e}")
 
-    # ── Static knowledge (always included as baseline) ────────────────────────
-    if len(context_chunks) < 2:
-        static_lang = language if language in STATIC_POLICY_KNOWLEDGE else "en"
-        for entry in STATIC_POLICY_KNOWLEDGE[static_lang]:
-            context_chunks.append(f"**{entry['title']}**\n{entry['text']}")
-            sources.append({"type": "static", "title": entry["title"]})
+    # ── Static knowledge (Disabled) ───────────────────────────────────────────
+    # Bypassed since the user requested no use of previous static data or database files
 
     return {
         "context": "\n\n".join(context_chunks[:top_k]),

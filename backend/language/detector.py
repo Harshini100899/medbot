@@ -76,10 +76,27 @@ def language_name(code: str) -> str:
 
 # ─── System prompts per language ──────────────────────────────────────────────
 SYSTEM_PROMPT_LANG = {
-    "de": "Antworte auf Deutsch. ",
-    "en": "Respond in English. ",
-    "tr": "Türkçe yanıt ver. ",
-    "uk": "Відповідай українською мовою. ",
+    "de": (
+        "Antworte auf Deutsch. Verwende klare, einfache und verständliche Sprache. "
+        "Achte darauf, dass medizinische Fachbegriffe erklärt werden."
+    ),
+    "en": (
+        "Respond in English. Translate concepts where appropriate, but keep important German administrative "
+        "terms in parentheses next to their translation (e.g. 'health insurance card (Krankenkassenkarte)', "
+        "'social welfare office (Sozialamt)', 'statutory health insurance (GKV)', 'Kassenpatienten', or 'Krankenschein'). "
+        "This helps the user recognize them when navigating the German healthcare system."
+    ),
+    "tr": (
+        "Türkçe yanıt ver. Alman sağlık sistemindeki önemli terimleri parantez içinde Almanca olarak belirt "
+        "(örneğin: 'sosyal yardım dairesi (Sozialamt)', 'sağlık sigortası kartı (Krankenkassenkarte)', 'yasal sağlık sigortası (GKV)'). "
+        "Bu, kullanıcının resmi kurumlarda bu terimleri tanımasını kolaylaştıracaktır."
+    ),
+    "uk": (
+        "Відповідай українською мовою. Пиши зрозуміло та з повагою. Важливі німецькі адміністративні "
+        "терміни вказуй у дужках німецькою мовою поруч із перекладом (наприклад: 'каса соціального захисту (Sozialamt)', "
+        "'картка медичного страхування (Krankenkassenkarte)', 'державне медичне страхування (GKV)'). "
+        "Це допоможе користувачеві орієнтуватися в німецькій медичній системі."
+    ),
 }
 
 

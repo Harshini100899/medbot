@@ -13,7 +13,7 @@ INTENTS = {
     "doctor_search":    "doctor_search_agent",
     "medical_knowledge":"medical_knowledge_agent",
     "policy_rights":    "policy_rights_agent",
-    "location_maps":    "location_maps_agent",
+    "location_maps":    "medical_knowledge_agent",   # disabled maps_agent, route to medical_knowledge
     "migrant_health":   "migrant_health_agent",
     "general":          "medical_knowledge_agent",   # default fallback
 }

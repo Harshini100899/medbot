@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 # ─── Trusted medical websites ─────────────────────────────────────────────────
 DOCTOR_SEARCH_DOMAINS = [
     "arzt-auskunft.de",
+    "arztsuche.kvno.de",
     "jameda.de",
     "kvno.de",
     "kvwl.de",
@@ -24,7 +25,6 @@ MEDICAL_KNOWLEDGE_DOMAINS = [
     "bundesgesundheitsministerium.de",
     "kvno.de",
     "kvwl.de",
-    "barmer.de",
 ]
 
 POLICY_DOMAINS = [
@@ -33,7 +33,6 @@ POLICY_DOMAINS = [
     "bundesgesundheitsministerium.de",
     "kvno.de",
     "kvwl.de",
-    "barmer.de",
 ]
 
 

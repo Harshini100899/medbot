@@ -111,8 +111,8 @@ async def retrieve_medical_context(
 ) -> Dict[str, Any]:
     """
     Retrieve relevant medical documents for the query.
-    1. Try Tavily web search on trusted German health domains
-    2. Fall back to static knowledge base
+    1. Try Tavily web search on trusted German health domains.
+    2. Static fallback disabled.
     """
     sources: List[Dict] = []
     context_chunks: List[str] = []
@@ -135,29 +135,8 @@ async def retrieve_medical_context(
         except Exception as e:
             logger.warning(f"Medical web search failed: {e}")
 
-    # ── Static knowledge fallback ──────────────────────────────────────────────
-    if len(context_chunks) < 2:
-        q_lower = query.lower()
-        matched = []
-        for entry in STATIC_MEDICAL_KNOWLEDGE:
-            relevance_score = sum(
-                1 for word in q_lower.split()
-                if len(word) > 3 and word in entry["text"].lower()
-            )
-            if relevance_score > 0:
-                matched.append((relevance_score, entry))
-        
-        # Sort by relevance, take top results
-        matched.sort(key=lambda x: x[0], reverse=True)
-        for _, entry in matched[:3]:
-            context_chunks.append(f"**{entry['title']}**\n{entry['text']}")
-            sources.append({"type": "static", "title": entry["title"]})
-
-        # If no match found, include a couple of general entries
-        if not matched:
-            for entry in STATIC_MEDICAL_KNOWLEDGE[:2]:
-                context_chunks.append(f"**{entry['title']}**\n{entry['text']}")
-                sources.append({"type": "static", "title": entry["title"]})
+    # ── Static knowledge fallback (Disabled) ───────────────────────────────────
+    # Bypassed since the user requested no use of previous static data or database files
 
     return {
         "context": "\n\n".join(context_chunks[:top_k]),

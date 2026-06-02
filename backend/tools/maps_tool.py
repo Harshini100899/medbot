@@ -48,33 +48,24 @@ def openstreetmap_url(lat: float, lng: float, zoom: int = 16) -> str:
 
 
 async def get_nearby_hospitals(city: str = "Oberhausen") -> List[Dict[str, Any]]:
-    """Return static list of key hospitals in Oberhausen (fallback when DB unavailable)."""
+    """Return static list of key hospitals in Oberhausen (fallback when DB unavailable, maps disabled)."""
     return [
         {
             "name": "Evangelisches Krankenhaus Oberhausen",
             "address": "Virchowstr. 20, 46047 Oberhausen",
             "phone": "+49 208 881-0",
-            "maps_url": google_maps_directions_url(
-                "Evangelisches Krankenhaus Oberhausen, Virchowstr. 20"
-            ),
             "emergency": True,
         },
         {
             "name": "St. Marien-Hospital Oberhausen",
             "address": "Josefstr. 3, 46045 Oberhausen",
             "phone": "+49 208 8999-0",
-            "maps_url": google_maps_directions_url(
-                "St. Marien-Hospital, Josefstr. 3 Oberhausen"
-            ),
             "emergency": True,
         },
         {
             "name": "HELIOS St. Elisabeth Gruppe – Niederrhein",
             "address": "Steinbrinkstr. 96, 46145 Oberhausen",
             "phone": "+49 208 6996-0",
-            "maps_url": google_maps_directions_url(
-                "HELIOS St. Elisabeth Gruppe, Steinbrinkstr. 96 Oberhausen"
-            ),
             "emergency": False,
         },
     ]
@@ -86,17 +77,14 @@ async def get_vvr_transit_info(origin: str, destination: str) -> Dict[str, Any]:
         "provider": "VRR",
         "info": "For real-time transit info, visit: https://www.vrr.de",
         "journey_planner": f"https://www.vrr.de/en/tickets-tariffs/travel-information/",
-        "directions_url": google_maps_directions_url(destination, origin, "transit"),
+        "directions_url": "",
     }
 
 
 def format_doctor_map_entry(doctor: Dict[str, Any]) -> Dict[str, Any]:
-    """Enrich a doctor record with map links."""
-    addr = doctor.get("address", "")
-    if addr:
-        doctor["maps_url"] = google_maps_directions_url(addr)
-        loc = doctor.get("location", {})
-        if loc and "coordinates" in loc:
-            lng, lat = loc["coordinates"]
-            doctor["osm_url"] = openstreetmap_url(lat, lng)
+    """Enrich a doctor record with map links. (Disabled)"""
+    if "maps_url" in doctor:
+        del doctor["maps_url"]
+    if "osm_url" in doctor:
+        del doctor["osm_url"]
     return doctor
