@@ -65,7 +65,8 @@ async def web_search(
         if include_domains:
             kwargs["include_domains"] = include_domains
 
-        response = await client.search(**kwargs)
+        import asyncio
+        response = await asyncio.wait_for(client.search(**kwargs), timeout=10.0)
         results = response.get("results", [])
 
         return [
