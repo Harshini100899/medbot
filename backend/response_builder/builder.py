@@ -66,6 +66,8 @@ async def build_response(state: MedBotState) -> MedBotState:
     Response builder node — final step in the graph.
     Assembles the complete response from agent output + metadata.
     """
+    from langchain_core.messages import AIMessage
+
     lang = state.get("user_language", "en")
     raw = state.get("agent_raw_output", "")
     sources = state.get("sources", [])
@@ -99,8 +101,18 @@ async def build_response(state: MedBotState) -> MedBotState:
         "timestamp": int(time.time()),
     }
 
+    # Append the AI response message to the messages list so that it is persisted by the checkpointer
+    ai_msg = AIMessage(
+        content=response,
+        additional_kwargs={
+            "agent_used": agent,
+            "is_emergency": is_emergency,
+        }
+    )
+
     return {
         **state,
+        "messages": [ai_msg],
         "final_response": response,
         "response_metadata": metadata,
     }

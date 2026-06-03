@@ -19,6 +19,7 @@
           <span class="logo-sub">Oberhausen</span>
         </div>
       </div>
+      <button class="new-chat-btn" id="newChatBtn" onclick="startNewChat()">➕ New Chat</button>
     </div>
 
     <div class="lang-selector">
@@ -28,6 +29,14 @@
         <button class="lang-btn" data-lang="de" onclick="setLang('de')">🇩🇪 DE</button>
         <button class="lang-btn" data-lang="tr" onclick="setLang('tr')">🇹🇷 TR</button>
         <button class="lang-btn" data-lang="uk" onclick="setLang('uk')">🇺🇦 UK</button>
+      </div>
+    </div>
+
+    <!-- Recent Chats -->
+    <div class="recent-chats-container">
+      <div class="rc-label">Recent Chats</div>
+      <div class="recent-chats-list" id="recentChatsList">
+        <!-- populated dynamically -->
       </div>
     </div>
 

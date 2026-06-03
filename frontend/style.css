@@ -748,3 +748,114 @@ body {
 }
 
 .sidebar-overlay.show { display: block; }
+
+/* ── Recent Chats & New Chat Styling ────────────────────────────────────── */
+
+.new-chat-btn {
+  display: block;
+  width: 100%;
+  background: var(--sidebar-accent);
+  color: #fff;
+  border: none;
+  border-radius: var(--radius-sm);
+  padding: 9px;
+  font-size: .85rem;
+  font-weight: 600;
+  cursor: pointer;
+  margin-top: 14px;
+  font-family: var(--font);
+  transition: background var(--transition), transform .1s ease;
+}
+
+.new-chat-btn:hover {
+  background: #1b63b8;
+}
+
+.new-chat-btn:active {
+  transform: scale(0.98);
+}
+
+.recent-chats-container {
+  padding: 14px 18px;
+  border-bottom: 1px solid rgba(255,255,255,.06);
+  display: flex;
+  flex-direction: column;
+  max-height: 240px;
+}
+
+.rc-label {
+  font-size: .7rem;
+  text-transform: uppercase;
+  letter-spacing: .9px;
+  color: #8aa0c4;
+  margin-bottom: 8px;
+}
+
+.recent-chats-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow-y: auto;
+  padding-right: 4px;
+}
+
+.recent-chats-list::-webkit-scrollbar {
+  width: 4px;
+}
+.recent-chats-list::-webkit-scrollbar-track {
+  background: transparent;
+}
+.recent-chats-list::-webkit-scrollbar-thumb {
+  background: rgba(255,255,255,.15);
+  border-radius: 4px;
+}
+
+.recent-chat-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 10px;
+  background: rgba(255,255,255,.04);
+  border: 1px solid rgba(255,255,255,.06);
+  border-radius: var(--radius-sm);
+  color: var(--sidebar-text);
+  cursor: pointer;
+  transition: background var(--transition), border-color var(--transition), color var(--transition);
+  font-size: .82rem;
+  gap: 10px;
+}
+
+.recent-chat-item:hover {
+  background: rgba(255,255,255,.1);
+  border-color: rgba(255,255,255,.15);
+  color: #fff;
+}
+
+.recent-chat-item.active {
+  background: rgba(42,132,224,.18);
+  border-color: var(--sidebar-accent);
+  color: #fff;
+  font-weight: 500;
+}
+
+.recent-chat-title {
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.recent-chat-delete {
+  background: none;
+  border: none;
+  color: rgba(255,255,255,.3);
+  cursor: pointer;
+  padding: 2px 4px;
+  font-size: .9rem;
+  transition: color var(--transition), transform var(--transition);
+}
+
+.recent-chat-delete:hover {
+  color: #ff8a80;
+  transform: scale(1.15);
+}

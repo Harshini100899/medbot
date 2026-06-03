@@ -12,6 +12,7 @@ from backend.language.detector import get_language_instruction
 from backend.subagents.policy_rag_subagent import retrieve_policy_context
 from backend.subagents.rag_retrieval_subagent import retrieve_medical_context
 from backend.llm_factory import get_llm
+from backend.subagents.doctor_search_subagent import detect_and_search_doctors_inline
 
 logger = logging.getLogger(__name__)
 
@@ -31,10 +32,24 @@ CORE SERVICES FOR MIGRANTS IN OBERHAUSEN:
 5. **Translation & Interpreter Services**: The Social Welfare Office or Gesundheitsamt can coordinate community interpreters ('Gemeindedolmetscher') to accompany users to medical appointments.
 
 GUIDELINES FOR ADVICE:
-1. **Warmth & Low-Barrier Language**: Be extremely patient, supportive, and non-judgmental. Many users are afraid or have had negative experiences. Use clear, low-barrier language.
-2. **Explain Health Rights Simply**: Focus on explaining how the user can get treated. For example, explain how to get a Krankenschein or how to register for insurance.
-3. **Psychological & Trauma Care**: If a user exhibits signs of depression, anxiety, or post-traumatic stress (PTSD), mention the Psychosoziales Zentrum für Flüchtlinge (PSZ) in Düsseldorf or Mülheim, and the Telefonseelsorge (☎ 0800 111 0 111).
-4. **No Legal or Medical Diagnosis**: Always clearly separate administrative advice from clinical treatment. Direct them to GPs ('Hausärzte') for clinical issues and social workers/counselors for legal/residency issues.
+1. **Clinical Safety Screening & Crisis Care**:
+   - If the user explicitly mentions depression, anxiety, feeling overwhelmed, distress, or potential self-harm, you MUST start your response with a brief risk-screening question: "Are you currently safe, or are you having thoughts of harming yourself?" before explaining any administrative or logistical details.
+   - Reassure the user in a supportive, non-stigmatising tone.
+   - Provide the telephone counseling (Telefonseelsorge) numbers: 0800 111 0 111 or 0800 111 0 222 (free and anonymous, 24/7).
+   - For life-threatening emergencies, call 112 immediately.
+
+2. **Warmth & Low-Barrier Language**: Be extremely patient, supportive, and non-judgmental. Many users are afraid or have had negative experiences. Use clear, low-barrier language.
+
+3. **Explain Health Rights Simply**: Focus on explaining how the user can get treated. For example, explain how to get a Krankenschein or how to register for insurance. Explain the psychotherapy GKV pathway if asked (Sprechstunde initial assessment, probatory sessions, acute treatment, and the Kostenerstattungsverfahren route).
+
+4. **Psychological & Trauma Care**: If a user exhibits signs of depression, anxiety, or post-traumatic stress (PTSD), mention the Psychosoziales Zentrum für Flüchtlinge (PSZ) in Düsseldorf or Mülheim, and the Telefonseelsorge.
+
+5. **No Legal or Medical Diagnosis**: Always clearly separate administrative advice from clinical treatment. Direct them to GPs ('Hausärzte') for clinical issues and social workers/counselors for legal/residency issues.
+
+CITATION INSTRUCTIONS:
+- Whenever you make a factual claim (e.g. about GKV coverage, 116 117 booking, or AsylbLG regulations), you MUST cite its source inline using the exact website name and URL provided in the RELEVANT KNOWLEDGE context. Format citations as: `[Website Name](Source URL)` or `[1](Source URL)`. Do not make up URLs.
+- If doctor/therapist listings are present in the RELEVANT KNOWLEDGE context, list them clearly. Format each doctor name as a clickable markdown link to their profile:
+  `1. [Herr/Frau Dr. Name](Profile Link) (Specialization) - Address: ..., Phone: ...`
 
 IMPORTANT HEALTH RESOURCES:
 - **Bundesweite Gesundheitsberatung für Geflüchtete**: ☎ 0800 111 0 006 (free health advice line in multiple languages)
@@ -58,9 +73,25 @@ async def run_migrant_health_agent(state: MedBotState) -> MedBotState:
 
     sources = policy_result.get("sources", []) + medical_result.get("sources", [])
 
+    # ── Inline Doctor Search Integration ───────────────────────────────────
+    doctor_res = await detect_and_search_doctors_inline(user_input, lang)
+    if doctor_res and doctor_res.get("doctors"):
+        docs_list = doctor_res["doctors"]
+        doctor_context = "\n\nLOCAL DOCTORS/THERAPISTS FOUND IN OBERHAUSEN (LIVE WEB SEARCH RESULTS):\n"
+        for idx, doc in enumerate(docs_list[:3]):
+            doctor_context += f"- {doc['name']} ({doc['specialization']}), Address: {doc['address']}, Phone: {doc['phone']}, Profile Link: {doc.get('source_url', doc.get('url', ''))}\n"
+        combined_context = combined_context + doctor_context
+        # Merge sources
+        if doctor_res.get("source_url"):
+            sources.append({
+                "title": f"Doctor Search: {doctor_res.get('source', 'arzt-auskunft.de')}",
+                "url": doctor_res.get("source_url"),
+                "type": "doctor_search"
+            })
+
     prompt = MIGRANT_SYSTEM_PROMPT.format(
         lang_instruction=get_language_instruction(lang),
-        context=combined_context[:3000] or "Providing general guidance.",
+        context=combined_context[:3500] or "Providing general guidance.",
     )
 
     try:

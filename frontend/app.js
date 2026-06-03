@@ -120,8 +120,9 @@ function t(key) {
 }
 
 function agentLabel(agentKey) {
-  const labels = T[activeLang]?.agent_labels || T.en.agent_labels;
-  return labels[agentKey] || agentKey;
+  return activeLang === 'de' ? '🧠 Supervisor-Agent' :
+         activeLang === 'tr' ? '🧠 Süpervizör Ajanı' :
+         activeLang === 'uk' ? '🧠 Супевайзер Агент' : '🧠 Supervisor Agent';
 }
 
 // ── Init ─────────────────────────────────────────────────────────────────────
@@ -133,9 +134,6 @@ document.addEventListener('DOMContentLoaded', () => {
   // Apply saved language
   applyLang(activeLang);
 
-  // Render welcome
-  renderWelcome();
-
   // Textarea auto-resize on load
   const inp = $input();
   if (inp) {
@@ -145,6 +143,38 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Check server health
   checkHealth();
+
+  // Load sessions list in sidebar
+  loadSessions();
+
+  // Chat continuation: check if current session has history on server
+  (async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/chat/history/${sessionId}`);
+      if (resp.ok) {
+        const data = await resp.json();
+        const history = data.history || [];
+        if (history.length > 0) {
+          removeWelcome();
+          const msgs = $messages();
+          if (msgs) msgs.innerHTML = '';
+          history.forEach(h => {
+            if (h.role === 'user') {
+              appendUserMsg(h.content);
+            } else {
+              appendBotMsg({
+                text: h.content,
+                agent: 'supervisor',
+                isEmergency: h.is_emergency
+              });
+            }
+          });
+          return;
+        }
+      }
+    } catch (_) {}
+    renderWelcome();
+  })();
 
   // Mobile overlay
   document.body.insertAdjacentHTML('beforeend', '<div class="sidebar-overlay" id="sidebarOverlay" onclick="closeSidebar()"></div>');
@@ -416,6 +446,7 @@ async function sendRest(text) {
     });
 
     showAgentIndicator(data.agent, false);
+    loadSessions();
 
   } catch (err) {
     removeTypingIndicator();
@@ -533,6 +564,7 @@ function finishStream(bubble, text, meta, msgDiv) {
   }
 
   scrollBottom();
+  loadSessions();
 }
 
 // ── Quick message ─────────────────────────────────────────────────────────────
@@ -546,23 +578,162 @@ function quickMessage(text) {
   sendMessage();
 }
 
-// ── Clear chat ────────────────────────────────────────────────────────────────
-async function clearChat() {
-  if (!confirm(t('clear_confirm'))) return;
+// ── Session Management (New, List, Select, Delete, Clear) ───────────────────
 
-  // Clear server-side session
+async function loadSessions() {
+  const listEl = document.getElementById('recentChatsList');
+  if (!listEl) return;
   try {
-    await fetch(`${API_BASE}/api/chat/session/${sessionId}`, { method: 'DELETE' });
-  } catch (_) {}
+    const resp = await fetch(`${API_BASE}/api/chat/sessions`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const sessions = data.sessions || [];
+    
+    listEl.innerHTML = '';
+    if (sessions.length === 0) {
+      listEl.innerHTML = '<div style="font-size:0.75rem;color:rgba(255,255,255,0.3);text-align:center;padding:10px 0;">No recent chats</div>';
+      return;
+    }
+    
+    sessions.forEach(s => {
+      const item = document.createElement('div');
+      item.className = 'recent-chat-item' + (s.session_id === sessionId ? ' active' : '');
+      item.dataset.sessionId = s.session_id;
+      item.onclick = () => selectSession(s.session_id);
+      
+      const title = document.createElement('span');
+      title.className = 'recent-chat-title';
+      title.textContent = s.title || 'Conversation';
+      title.title = s.last_message || '';
+      
+      const delBtn = document.createElement('button');
+      delBtn.className = 'recent-chat-delete';
+      delBtn.innerHTML = '🗑️';
+      delBtn.onclick = (e) => {
+        e.stopPropagation();
+        deleteSession(s.session_id);
+      };
+      
+      item.appendChild(title);
+      item.appendChild(delBtn);
+      listEl.appendChild(item);
+    });
+  } catch (err) {
+    console.error('[MedBot loadSessions]', err);
+  }
+}
 
-  // New session
+async function startNewChat() {
+  try {
+    const resp = await fetch(`${API_BASE}/api/chat/sessions`, { method: 'POST' });
+    if (resp.ok) {
+      const data = await resp.json();
+      if (data.session_id) {
+        sessionId = data.session_id;
+        localStorage.setItem('medbot_session', sessionId);
+        updateSessionDisplay();
+        renderWelcome();
+        hideAgentIndicator();
+        loadSessions();
+        const msgs = $messages();
+        if (msgs) msgs.innerHTML = '';
+        renderWelcome();
+        return;
+      }
+    }
+  } catch (_) {}
+  
+  // Local fallback
   sessionId = generateUUID();
   localStorage.setItem('medbot_session', sessionId);
   updateSessionDisplay();
-
-  // Clear UI
+  const msgs = $messages();
+  if (msgs) msgs.innerHTML = '';
   renderWelcome();
   hideAgentIndicator();
+  loadSessions();
+}
+
+async function selectSession(sid) {
+  if (isStreaming) return;
+  sessionId = sid;
+  localStorage.setItem('medbot_session', sessionId);
+  updateSessionDisplay();
+  
+  // Highlight active in list
+  document.querySelectorAll('.recent-chat-item').forEach(item => {
+    item.classList.toggle('active', item.dataset.sessionId === sid);
+  });
+  
+  const msgs = $messages();
+  if (!msgs) return;
+  msgs.innerHTML = '';
+  appendTypingIndicator();
+  
+  try {
+    const resp = await fetch(`${API_BASE}/api/chat/history/${sessionId}`);
+    removeTypingIndicator();
+    if (!resp.ok) {
+      renderWelcome();
+      return;
+    }
+    const data = await resp.json();
+    const history = data.history || [];
+    
+    if (history.length === 0) {
+      renderWelcome();
+    } else {
+      removeWelcome();
+      history.forEach(h => {
+        if (h.role === 'user') {
+          appendUserMsg(h.content);
+        } else {
+          appendBotMsg({
+            text: h.content,
+            agent: 'supervisor',
+            isEmergency: h.is_emergency
+          });
+        }
+      });
+    }
+  } catch (err) {
+    removeTypingIndicator();
+    renderWelcome();
+    console.error('[MedBot selectSession]', err);
+  }
+  loadSessions();
+}
+
+async function deleteSession(sid) {
+  if (!confirm(t('clear_confirm'))) return;
+  try {
+    const resp = await fetch(`${API_BASE}/api/chat/session/${sid}`, { method: 'DELETE' });
+    if (resp.ok) {
+      showToast('Chat deleted', 'success');
+      if (sid === sessionId) {
+        await startNewChat();
+      } else {
+        loadSessions();
+      }
+    }
+  } catch (err) {
+    console.error('[MedBot deleteSession]', err);
+  }
+}
+
+async function clearChat() {
+  if (!confirm(t('clear_confirm'))) return;
+  try {
+    await fetch(`${API_BASE}/api/chat/session/${sessionId}/clear`, { method: 'POST' });
+    showToast('Chat cleared', 'success');
+    const msgs = $messages();
+    if (msgs) msgs.innerHTML = '';
+    renderWelcome();
+    hideAgentIndicator();
+    loadSessions();
+  } catch (err) {
+    console.error('[MedBot clearChat]', err);
+  }
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────

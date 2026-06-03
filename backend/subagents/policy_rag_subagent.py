@@ -102,7 +102,8 @@ async def retrieve_policy_context(
         web_results = await policy_web_search(query, language)
         for r in web_results:
             if r.get("content"):
-                context_chunks.append(r["content"])
+                chunk = f"Source Title: {r['title']}\nSource URL: {r['url']}\nContent:\n{r['content']}"
+                context_chunks.append(chunk)
                 sources.append({"type": "web", "title": r["title"], "url": r["url"]})
         if web_results:
             logger.info(f"Policy web search returned {len(web_results)} results")

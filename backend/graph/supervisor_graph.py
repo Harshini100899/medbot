@@ -20,8 +20,7 @@ from backend.agents.policy_rights_agent import run_policy_rights_agent
 from backend.agents.location_maps_agent import run_location_maps_agent
 from backend.agents.migrant_health_agent import run_migrant_health_agent
 from backend.response_builder.builder import build_response
-from backend.memory.redis_memory import push_message, get_messages
-from backend.db.mongodb import save_conversation_turn, create_session
+# No Redis/MongoDB imports needed for pure in-memory checkpointer
 
 logger = logging.getLogger(__name__)
 
@@ -112,16 +111,9 @@ async def process_message(
 
     graph = get_graph()
 
-    # ── Load short-term memory from Redis ─────────────────────────────────
-    history = await get_messages(session_id, last_n=8)
-    messages = []
-    for m in history:
-        if m["role"] == "user":
-            messages.append(HumanMessage(content=m["content"]))
-
-    # ── Initial state ─────────────────────────────────────────────────────
+    # ── Initial state (In-memory LangGraph checkpointer will auto-append message) ──
     initial_state: MedBotState = {
-        "messages": messages + [HumanMessage(content=user_input)],
+        "messages": [HumanMessage(content=user_input)],
         "session_id": session_id,
         "user_input": user_input,
         "user_language": "en",
@@ -140,9 +132,6 @@ async def process_message(
         "response_metadata": {},
         "extra_context": {},
     }
-
-    # ── Ensure session exists in MongoDB ──────────────────────────────────
-    await create_session(session_id)
 
     # ── Run the graph ─────────────────────────────────────────────────────
     config = {"configurable": {"thread_id": session_id}}
@@ -166,22 +155,6 @@ async def process_message(
     lang = final_state.get("user_language", "en")
     intent = final_state.get("detected_intent", "general")
     agent = final_state.get("active_agent", "unknown")
-
-    # ── Save to short-term memory (Redis) ─────────────────────────────────
-    await push_message(session_id, "user", user_input)
-    await push_message(session_id, "assistant", response_text[:500])  # store summary
-
-    # ── Persist to MongoDB ────────────────────────────────────────────────
-    await save_conversation_turn(
-        session_id=session_id,
-        user_input=user_input,
-        bot_response=response_text,
-        language=lang,
-        intent=intent,
-        agent_used=agent,
-        sources=sources,
-        is_emergency=is_emergency,
-    )
 
     return {
         "response": response_text,
@@ -208,11 +181,8 @@ async def stream_message(
 
     graph = get_graph()
 
-    history = await get_messages(session_id, last_n=8)
-    messages = [HumanMessage(content=m["content"]) for m in history if m["role"] == "user"]
-
     initial_state: MedBotState = {
-        "messages": messages + [HumanMessage(content=user_input)],
+        "messages": [HumanMessage(content=user_input)],
         "session_id": session_id,
         "user_input": user_input,
         "user_language": "en",
@@ -232,7 +202,6 @@ async def stream_message(
         "extra_context": {},
     }
 
-    await create_session(session_id)
     config = {"configurable": {"thread_id": session_id}}
 
     full_response = ""
@@ -261,7 +230,45 @@ async def stream_message(
         logger.error(f"Stream error: {e}")
         yield f"\n\n[Error: {e}]"
 
-    # Save after streaming
-    if full_response:
-        await push_message(session_id, "user", user_input)
-        await push_message(session_id, "assistant", full_response[:500])
+
+def clear_graph_memory(session_id: str) -> bool:
+    """Delete checkpoints and writes associated with the session_id from LangGraph memory."""
+    try:
+        _memory_saver.delete_thread(session_id)
+        logger.info(f"Cleared LangGraph memory for session {session_id}")
+        return True
+    except Exception as e:
+        logger.error(f"Error clearing LangGraph memory for session {session_id}: {e}")
+        return False
+
+
+async def list_graph_sessions() -> list:
+    """List all active sessions stored in LangGraph MemorySaver."""
+    sessions = []
+    graph = get_graph()
+    thread_ids = list(_memory_saver.storage.keys())
+    for tid in thread_ids:
+        try:
+            state = await graph.aget_state({"configurable": {"thread_id": tid}})
+            if not state or not state.values:
+                continue
+            messages = state.values.get("messages", [])
+            if not messages:
+                continue
+            # Get first message content for title
+            first_msg = messages[0].content
+            title = first_msg[:40] + "..." if len(first_msg) > 40 else first_msg
+            last_msg = messages[-1].content
+            updated_at = state.created_at or ""
+            sessions.append({
+                "session_id": tid,
+                "title": title,
+                "last_message": last_msg,
+                "updated_at": updated_at,
+                "message_count": len(messages),
+            })
+        except Exception as e:
+            logger.error(f"Error reading session {tid} details: {e}")
+    # Sort by updated_at descending
+    sessions.sort(key=lambda x: x.get("updated_at", ""), reverse=True)
+    return sessions

@@ -66,8 +66,24 @@ async def web_search(
             kwargs["include_domains"] = include_domains
 
         import asyncio
-        response = await asyncio.wait_for(client.search(**kwargs), timeout=10.0)
-        results = response.get("results", [])
+        results = []
+        try:
+            response = await asyncio.wait_for(client.search(**kwargs), timeout=10.0)
+            results = response.get("results", [])
+        except Exception as search_err:
+            logger.warning(f"Initial domain-restricted search failed: {search_err}")
+            results = []
+
+        # Fallback to unrestricted search if restricted returned nothing
+        if not results and include_domains:
+            logger.info("Restricted search returned no results. Retrying without domain restriction.")
+            kwargs.pop("include_domains", None)
+            try:
+                response = await asyncio.wait_for(client.search(**kwargs), timeout=10.0)
+                results = response.get("results", [])
+            except Exception as fallback_err:
+                logger.error(f"Fallback search failed: {fallback_err}")
+                results = []
 
         return [
             {

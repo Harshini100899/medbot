@@ -6,12 +6,10 @@ import uuid
 import logging
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException, Header
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
-from backend.graph.supervisor_graph import process_message
-from backend.memory.redis_memory import check_rate_limit, get_messages
-from backend.db.mongodb import get_conversation_history, get_session
+from backend.graph.supervisor_graph import process_message, get_graph, clear_graph_memory, list_graph_sessions
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/chat", tags=["Chat"])
@@ -29,7 +27,6 @@ class ChatRequest(BaseModel):
                 "session_id": None,
             }
         }
-
 
 class ChatResponse(BaseModel):
     response: str
@@ -51,10 +48,6 @@ async def send_message(request: ChatRequest):
     # Generate or use session ID
     session_id = request.session_id or str(uuid.uuid4())
 
-    # Rate limiting
-    if not await check_rate_limit(session_id, limit=30, window=60):
-        raise HTTPException(status_code=429, detail="Rate limit exceeded. Please wait before sending more messages.")
-
     # Process through LangGraph
     result = await process_message(
         user_input=request.message,
@@ -66,39 +59,85 @@ async def send_message(request: ChatRequest):
         session_id=result["session_id"],
         language=result.get("language", "en"),
         intent=result.get("intent", "general"),
-        agent=result.get("agent", "unknown"),
+        agent="supervisor",  # Force UI to display Supervisor Agent
         is_emergency=result.get("is_emergency", False),
         sources=result.get("sources", []),
         metadata=result.get("metadata", {}),
     )
 
 
+@router.get("/sessions")
+async def get_all_sessions():
+    """Retrieve all active chat sessions stored in LangGraph Memory."""
+    try:
+        sessions = await list_graph_sessions()
+        return {"sessions": sessions}
+    except Exception as e:
+        logger.error(f"Error listing sessions: {e}")
+        return {"sessions": []}
+
+
+@router.post("/sessions")
+async def create_new_session():
+    """Explicitly generate a new session ID."""
+    new_id = str(uuid.uuid4())
+    return {"session_id": new_id, "status": "created"}
+
+
 @router.get("/history/{session_id}")
-async def get_history(session_id: str, limit: int = 20):
-    """Retrieve conversation history for a session."""
-    history = await get_conversation_history(session_id, limit=limit)
-    return {"session_id": session_id, "history": history, "count": len(history)}
+async def get_history(session_id: str):
+    """Retrieve conversation history for a session directly from LangGraph."""
+    try:
+        graph = get_graph()
+        state = await graph.aget_state({"configurable": {"thread_id": session_id}})
+        messages = state.values.get("messages", []) if state and state.values else []
+        
+        history = []
+        for m in messages:
+            role = "user" if m.type == "human" else "assistant"
+            history.append({
+                "role": role,
+                "content": m.content,
+                "is_emergency": getattr(m, "additional_kwargs", {}).get("is_emergency", False),
+                "agent_used": "supervisor"
+            })
+        return {"session_id": session_id, "history": history, "count": len(history)}
+    except Exception as e:
+        logger.error(f"Error getting history for {session_id}: {e}")
+        return {"session_id": session_id, "history": [], "count": 0, "error": str(e)}
 
 
 @router.get("/session/{session_id}")
 async def get_session_info(session_id: str):
-    """Get session metadata."""
-    session = await get_session(session_id)
-    if not session:
+    """Get session metadata from LangGraph checkpointer."""
+    try:
+        graph = get_graph()
+        state = await graph.aget_state({"configurable": {"thread_id": session_id}})
+        if state and state.values:
+            return {
+                "session_id": session_id,
+                "status": "active",
+                "created_at": state.created_at,
+                "message_count": len(state.values.get("messages", []))
+            }
         return {"session_id": session_id, "status": "new"}
-    return session
+    except Exception:
+        return {"session_id": session_id, "status": "new"}
 
 
 @router.delete("/session/{session_id}")
-async def clear_session(session_id: str):
-    """Clear short-term memory for a session (Redis)."""
-    try:
-        import redis.asyncio as aioredis
-        from backend.config import settings
-        r = aioredis.from_url(settings.REDIS_URL, decode_responses=True)
-        keys = await r.keys(f"session:{session_id}:*")
-        if keys:
-            await r.delete(*keys)
-        return {"status": "cleared", "session_id": session_id, "keys_removed": len(keys)}
-    except Exception as e:
-        return {"status": "partial", "error": str(e)}
+async def delete_session(session_id: str):
+    """Clear memory checkpoints for the chat session entirely."""
+    ok = clear_graph_memory(session_id)
+    if ok:
+        return {"status": "deleted", "session_id": session_id}
+    raise HTTPException(status_code=500, detail="Failed to delete session memory")
+
+
+@router.post("/session/{session_id}/clear")
+async def clear_chat_history(session_id: str):
+    """Clear memory checkpoints for the chat session, starting it fresh."""
+    ok = clear_graph_memory(session_id)
+    if ok:
+        return {"status": "cleared", "session_id": session_id}
+    raise HTTPException(status_code=500, detail="Failed to clear session memory")

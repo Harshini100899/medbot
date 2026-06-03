@@ -3,6 +3,7 @@ backend/tools/arzt_auskunft_scraper.py — Scraper tool for arzt-auskunft.de
 Fetches and parses real doctor listings in Oberhausen from arzt-auskunft.de
 """
 from __future__ import annotations
+import asyncio
 import logging
 import re
 from typing import List, Dict, Any, Optional
@@ -40,8 +41,12 @@ MAPPED_KEYWORDS = {
     "orthop": "orthopaedie",
     "knochen": "orthopaedie",
     "bone": "orthopaedie",
-    "psychiatr": "nervenheilkunde",
-    "psych": "nervenheilkunde",
+    "psychiatrie": "psychiatrie-und-psychotherapie",
+    "psychotherapy": "psychiatrie-und-psychotherapie",
+    "psychotherapeut": "psychiatrie-und-psychotherapie",
+    "therapeut": "psychiatrie-und-psychotherapie",
+    "psychiatr": "psychiatrie-und-psychotherapie",
+    "psych": "psychiatrie-und-psychotherapie",
     "dentist": "zahnmedizin",
     "zahn": "zahnmedizin",
     "gp": "allgemeinmedizin",
@@ -49,6 +54,22 @@ MAPPED_KEYWORDS = {
     "hausarzt": "allgemeinmedizin",
     "allgemein": "allgemeinmedizin",
 }
+
+
+async def fetch_phone(client: httpx.AsyncClient, url: str) -> str:
+    """Fetch the detail page of the doctor and parse the first phone number."""
+    if not url or not url.startswith("http"):
+        return "-"
+    try:
+        resp = await client.get(url, timeout=4.0)
+        if resp.status_code == 200:
+            html = resp.text
+            tels = re.findall(r'href="tel:([^"]+)"', html)
+            if tels:
+                return tels[0].strip()
+    except Exception as e:
+        logger.warning(f"Error fetching phone from {url}: {e}")
+    return "-"
 
 
 async def scrape_arzt_auskunft(
@@ -117,6 +138,8 @@ async def scrape_arzt_auskunft(
             # Extract mobile/detail href
             href_match = re.search(r'data-href-mobile="([^"]+)"', card)
             detail_url = href_match.group(1) if href_match else source_url
+            if detail_url and not detail_url.startswith("http"):
+                detail_url = "https://www.arzt-auskunft.de" + detail_url
 
             # Extract name
             name_match = re.search(r'itemprop="name"[^>]*>([^<]+)</h2>', card)
@@ -145,7 +168,7 @@ async def scrape_arzt_auskunft(
                 "name": name,
                 "specialization": spec_text,
                 "address": full_address,
-                "phone": "—",  # Phone numbers are typically behind detail page or require geo-lookup
+                "phone": "-",  # Will be fetched concurrently below
                 "languages": ["de"],
                 "kvno_accepted": True,
                 "source_url": detail_url,
@@ -164,5 +187,17 @@ async def scrape_arzt_auskunft(
         if filtered:
             doctors = filtered
 
-    logger.info(f"Successfully scraped and parsed {len(doctors)} doctors from {source_url}")
-    return doctors[:limit]
+    # Fetch phone numbers concurrently for the selected doctors
+    selected_doctors = doctors[:limit]
+    if selected_doctors:
+        try:
+            async with httpx.AsyncClient(headers=headers, follow_redirects=True, timeout=5.0) as client:
+                tasks = [fetch_phone(client, d["source_url"]) for d in selected_doctors]
+                phones = await asyncio.gather(*tasks)
+                for d, phone in zip(selected_doctors, phones):
+                    d["phone"] = phone if phone != "-" else "-"
+        except Exception as e:
+            logger.error(f"Error gathering doctor phone numbers: {e}")
+
+    logger.info(f"Successfully scraped and parsed {len(selected_doctors)} doctors from {source_url}")
+    return selected_doctors

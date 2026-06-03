@@ -66,6 +66,22 @@ SYMPTOM_SPECIALISATION_MAP = {
     "gastro": "Internal Medicine", "digestion": "Internal Medicine",
 }
 
+SPECIALISATION_GERMAN_MAP = {
+    "Pediatrics": "Kinderarzt Kinderheilkunde",
+    "Cardiology": "Kardiologe Kardiologie",
+    "Dermatology": "Hautarzt Dermatologe Dermatologie",
+    "Ophthalmology": "Augenarzt Augenheilkunde",
+    "Dentistry": "Zahnarzt",
+    "Psychiatry & Psychotherapy": "Psychotherapeut Psychiater Psychotherapie",
+    "Gynecology": "Frauenarzt Gynäkologe Gynäkologie",
+    "Orthopedics": "Orthopäde Orthopädie",
+    "Pulmonology": "Lungenarzt Pneumologe Pneumologie",
+    "Diabetology & Endocrinology": "Diabetologe Diabetes",
+    "Neurology": "Neurologe Neurologie",
+    "ENT (Ear, Nose, Throat)": "HNO Arzt Hals-Nasen-Ohrenarzt",
+    "Internal Medicine": "Internist Hausarzt Allgemeinmedizin",
+}
+
 
 def infer_specialisation(query: str) -> Optional[str]:
     """Infer the needed specialisation from free text keywords."""
@@ -100,7 +116,8 @@ async def _tavily_doctor_search(
     try:
         import re
         from backend.tools.web_search_tool import web_search, DOCTOR_SEARCH_DOMAINS
-        search_query = f"{specialization or query} Arzt {city}"
+        german_term = SPECIALISATION_GERMAN_MAP.get(specialization, specialization or query)
+        search_query = f"{german_term} Arzt {city}"
         results = await web_search(
             search_query,
             max_results=10,  # fetch more results to get good candidates
@@ -134,7 +151,7 @@ async def _tavily_doctor_search(
                 '- "name": (string, the doctor\'s name, e.g. "Dr. med. Hans Müller")\n'
                 '- "specialization": (string, e.g. "General Practitioner", "Cardiology", or the inferred/requested specialization)\n'
                 '- "address": (string, the full street address with postal code if found, e.g. "Mellinghofer Straße 228, 46047 Oberhausen", otherwise just the city name)\n'
-                '- "phone": (string, phone number if found, otherwise "—")\n'
+                '- "phone": (string, phone number if found, otherwise "-")\n'
                 '- "languages": (list of strings, languages spoken, default to ["de"] if not specified)\n'
                 '- "kvno_accepted": (boolean, True if they accept GKV/statutory health insurance or KVNO, default to True)\n'
                 '- "source_url": (string, the URL of the search result from which they were extracted)\n\n'
@@ -180,6 +197,13 @@ async def _tavily_doctor_search(
                     # Skip generic result titles
                     continue
 
+                # Filter out generic website and article titles from being parsed as doctors
+                is_real_doctor = any(p in doc_name for p in ["Dr.", "med.", "Prof.", "Herr", "Frau", "Praxis", "Klinik", "Therapie", "Center", "Zentrum", "Gemeinschaftspraxis"]) or any(k in doc_name.lower() for k in ["arzt", "therapeut", "psycholog", "neurolog", "kardiolog", "zahnarzt", "psychiatr", "hospital", "apotheke"])
+                has_blog_keywords = any(bk in doc_name.lower() for bk in ["guide", "how to", "insurance", "feather", "expat", "mind", "handbook", "germany", "cover", "health", "system", "counseling"])
+                if not is_real_doctor or has_blog_keywords:
+                    logger.info(f"Skipping generic web search result title as doctor: {doc_name}")
+                    continue
+
                 # Extract address
                 addr_match = addr_pattern.search(snippet)
                 if not addr_match:
@@ -188,7 +212,7 @@ async def _tavily_doctor_search(
 
                 # Extract phone
                 phone_match = phone_pattern.search(snippet)
-                phone = phone_match.group(1).strip() if phone_match else "—"
+                phone = phone_match.group(1).strip() if phone_match else "-"
 
                 doctors.append({
                     "name": doc_name,
@@ -214,12 +238,7 @@ async def find_doctors(
     limit: int = 5,
 ) -> Dict[str, Any]:
     """
-    Find doctors matching the query.
-
-    Priority:
-      1. Tavily web search (live, real listings)
-      2. Direct scraper → arzt-auskunft.de
-      3. Static FALLBACK_DOCTORS (disabled)
+    Find doctors matching the query by merging direct scraping and Tavily results.
 
     Returns
     -------
@@ -227,25 +246,43 @@ async def find_doctors(
     """
     inferred = specialization or infer_specialisation(query)
 
-    # ── 1. Try Tavily web search ──────────────────────────────────────────────
+    # 1. Run direct scraper
+    scraped_doctors = []
+    try:
+        logger.info("Running direct scraper for doctors")
+        scraped_doctors = await scrape_arzt_auskunft(
+            query=query,
+            specialization=inferred,
+            city=city,
+            limit=limit,
+        )
+    except Exception as e:
+        logger.error(f"Direct scraper error: {e}")
+
+    # 2. Run Tavily web search
     logger.info("Searching for doctors via Tavily web search")
-    doctors = await _tavily_doctor_search(query, inferred, city, limit)
+    tavily_doctors = await _tavily_doctor_search(query, inferred, city, limit)
 
-    # ── 2. Try direct web scraper (arzt-auskunft.de) if Tavily fails ──────────
-    if not doctors:
-        logger.info("Falling back to direct scraper for doctors")
-        try:
-            doctors = await scrape_arzt_auskunft(
-                query=query,
-                specialization=inferred,
-                city=city,
-                limit=limit,
-            )
-        except Exception as e:
-            logger.error(f"Direct scraper error: {e}")
+    # 3. Merge results (deduplicate by name)
+    seen_names = set()
+    merged_doctors = []
+    
+    for doc in scraped_doctors:
+        name_clean = doc["name"].lower().strip()
+        if name_clean not in seen_names:
+            seen_names.add(name_clean)
+            merged_doctors.append(doc)
 
-    # ── Enrich with maps links ────────────────────────────────────────────────
-    doctors = [format_doctor_map_entry(d) for d in doctors[:limit]]
+    for doc in tavily_doctors:
+        name_clean = doc["name"].lower().strip()
+        if name_clean not in seen_names:
+            # Check for substring matches to prevent duplicates (e.g. Dr. Müller vs. Müller)
+            if not any(seen in name_clean or name_clean in seen for seen in seen_names):
+                seen_names.add(name_clean)
+                merged_doctors.append(doc)
+
+    # Enrich with map entries formatting
+    doctors = [format_doctor_map_entry(d) for d in merged_doctors[:limit]]
     hospitals = [format_doctor_map_entry(h) for h in FALLBACK_HOSPITALS[:3]]
 
     return {
@@ -256,3 +293,29 @@ async def find_doctors(
         "source": "arzt-auskunft.de / jameda.de / kvno.de",
         "source_url": "https://www.arzt-auskunft.de",
     }
+
+
+async def detect_and_search_doctors_inline(user_input: str, lang: str) -> Dict[str, Any] | None:
+    """
+    Detect doctor search intent and perform the search inline, returning results to be injected into agent contexts.
+    """
+    t = user_input.lower()
+    doctor_keywords = [
+        "doctor", "therapist", "physician", "gp", "psychotherapist", "psychiatrist",
+        "arzt", "therapeut", "psychotherapeut", "psychiater", "hausarzt", "klinik", "hospital",
+        "doktor", "hekim", "psikolog", "psikoterapist", "лікар", "терапевт", "психотерапевт"
+    ]
+    search_keywords = [
+        "find", "search", "recommend", "look for", "suchen", "finden", "empfehlen", "bul", "ara", "знайти", "шукати"
+    ]
+    has_doctor = any(dk in t for dk in doctor_keywords)
+    has_search = any(sk in t for sk in search_keywords)
+    has_direct_city = "oberhausen" in t and has_doctor
+    
+    if has_direct_city or (has_doctor and has_search):
+        logger.info(f"Inline doctor search triggered for: '{user_input}'")
+        try:
+            return await find_doctors(query=user_input, language=lang)
+        except Exception as e:
+            logger.error(f"Error calling find_doctors inline: {e}")
+    return None
