@@ -43,7 +43,7 @@ async def main():
 
     # Test 3: Full find_doctors pipeline
     print("\n=== find_doctors Pipeline Test ===")
-    from backend.subagents.doctor_search_subagent import find_doctors
+    from backend.tools.doctor_search_tool import find_doctors
     result = await find_doctors("i have a diabetes find a suitable doctor", city="Oberhausen")
     docs = result.get("doctors", [])
     spec = result.get("inferred_specialisation")

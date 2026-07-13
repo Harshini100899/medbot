@@ -55,8 +55,22 @@ def get_llm(streaming: bool = False, temperature: Optional[float] = None) -> Bas
             streaming=streaming,
         )
 
+    elif provider == "groq":
+        if not settings.GROQ_API_KEY:
+            raise ValueError("GROQ_API_KEY not set in .env")
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            model=settings.GROQ_MODEL,
+            temperature=temp,
+            api_key=settings.GROQ_API_KEY,
+            base_url="https://api.groq.com/openai/v1",
+            max_tokens=settings.LLM_MAX_TOKENS,
+            streaming=streaming,
+        )
+
     else:
-        raise ValueError(f"Unknown LLM_PROVIDER: {provider}. Use 'ollama', 'openai', or 'anthropic'.")
+        raise ValueError(f"Unknown LLM_PROVIDER: {provider}. Use 'ollama', 'openai', 'anthropic', or 'groq'.")
+
 
 
 def _get_mock_llm() -> BaseChatModel:

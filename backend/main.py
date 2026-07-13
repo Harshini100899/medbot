@@ -52,8 +52,9 @@ async def lifespan(app: FastAPI):
     redis = await get_redis()
     mongo_ok = await mongo_health()
 
-    logger.info(f"  Redis:   {'✅ connected' if redis else '⚠️  disabled (short-term memory off)'}")
-    logger.info(f"  MongoDB: {'✅ connected' if mongo_ok else '⚠️  disabled (persistence off)'}")
+    logger.info(f"  Redis:    {'✅ connected (short-term memory)' if redis else '⚠️  disabled (short-term memory off)'}")
+    logger.info(f"  MongoDB:  {'✅ connected (persistence)' if mongo_ok else '⚠️  disabled (persistence off)'}")
+    logger.info(f"  Langfuse: {'✅ enabled (observability)' if settings.langfuse_enabled else '⚠️  disabled (no keys)'}")
     logger.info(f"  ChromaDB: ⚠️  disabled (using live web search)")
     logger.info(f"  Doctor Data: arzt-auskunft.de (live scraper)")
     logger.info(f"  Medical Info: gesund.bund.de / gesundheitsinformation.de / Tavily")
@@ -74,6 +75,17 @@ async def lifespan(app: FastAPI):
     yield
 
     logger.info("Shutting down MedBot...")
+    # Graceful cleanup of datastore connections and observability buffers.
+    try:
+        from backend.memory.redis_memory import close_redis
+        from backend.db.mongodb import close_db
+        from backend.observability.langfuse_tracer import flush as langfuse_flush
+
+        await close_redis()
+        await close_db()
+        langfuse_flush()
+    except Exception as e:
+        logger.debug(f"Shutdown cleanup warning: {e}")
 
 
 # ─── Application ──────────────────────────────────────────────────────────────
@@ -162,17 +174,24 @@ async def app_info():
     return {
         "name": settings.APP_NAME,
         "version": settings.APP_VERSION,
-        "agents": [
-            "supervisor",
-            "emergency_agent",
-            "doctor_search_agent",
-            "medical_knowledge_agent",
-            "policy_rights_agent",
-            "location_maps_agent",
-            "migrant_health_agent",
-        ],
+        "architecture": {
+            "level_1_supervisor": "Gateway router — emergency | medical | general",
+            "level_2_specialists": ["medical_specialist", "general_purpose (orchestrator)"],
+            "level_3_subagents": [
+                "doctor_search_agent",
+                "policy_rights_agent",
+                "location_maps_agent",
+                "migrant_health_agent",
+            ],
+            "fast_path": "emergency_agent",
+        },
+        "memory": {
+            "short_term": "Redis (rolling history, cache, rate-limit)",
+            "long_term": "MongoDB (durable conversation history)",
+            "checkpointer": "LangGraph MemorySaver (in-process fallback)",
+        },
+        "observability": "Langfuse" if settings.langfuse_enabled else "disabled",
         "languages": settings.SUPPORTED_LANGUAGES,
-        "architecture": "LangGraph Multi-Agent (ReACT + RAG + ChromaDB + Redis + MongoDB)",
     }
 
 

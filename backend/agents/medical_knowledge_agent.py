@@ -9,10 +9,10 @@ from langchain_core.messages import SystemMessage, HumanMessage
 
 from backend.graph.state import MedBotState
 from backend.language.detector import get_language_instruction
-from backend.subagents.rag_retrieval_subagent import retrieve_medical_context
+from backend.tools.rag_retrieval_tool import retrieve_medical_context
 from backend.ontology.normalizer import normalise
 from backend.llm_factory import get_llm
-from backend.subagents.doctor_search_subagent import detect_and_search_doctors_inline
+from backend.tools.doctor_search_tool import detect_and_search_doctors_inline
 
 logger = logging.getLogger(__name__)
 

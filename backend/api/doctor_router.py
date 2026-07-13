@@ -4,7 +4,7 @@ backend/api/doctor_router.py — Doctor & Pharmacy search endpoints
 from __future__ import annotations
 from typing import Optional
 from fastapi import APIRouter
-from backend.subagents.doctor_search_subagent import find_doctors
+from backend.tools.doctor_search_tool import find_doctors
 from backend.db.mongodb import search_doctors, get_hospitals, get_pharmacies
 
 router = APIRouter(prefix="/api/doctors", tags=["Doctors"])

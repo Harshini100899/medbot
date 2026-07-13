@@ -102,12 +102,12 @@ def test_intent_routing_general_medical():
 @pytest.mark.asyncio
 async def test_find_doctors_uses_fallback_without_scraper():
     """Verify find_doctors returns fallback doctors when scraper and Tavily both fail."""
-    from backend.subagents.doctor_search_subagent import find_doctors, FALLBACK_DOCTORS
+    from backend.tools.doctor_search_tool import find_doctors, FALLBACK_DOCTORS
 
     # Mock scraper to return empty (simulating network unavailability)
-    with patch("backend.subagents.doctor_search_subagent.scrape_arzt_auskunft",
+    with patch("backend.tools.doctor_search_tool.scrape_arzt_auskunft",
                new_callable=AsyncMock, return_value=[]), \
-         patch("backend.subagents.doctor_search_subagent._tavily_doctor_search",
+         patch("backend.tools.doctor_search_tool._tavily_doctor_search",
                new_callable=AsyncMock, return_value=[]):
         result = await find_doctors("diabetes", city="Oberhausen")
 

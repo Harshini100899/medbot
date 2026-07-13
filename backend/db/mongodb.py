@@ -1,5 +1,10 @@
 """
 backend/db/mongodb.py — MongoDB async persistence layer using Motor
+
+MongoDB (Docker) is the authoritative long-term store: full conversation
+history, session metadata, doctors and pharmacies. Every helper degrades
+gracefully to a no-op when Mongo is disabled or unreachable, so the app keeps
+running (short-term Redis / LangGraph checkpointer still serve the session).
 """
 from __future__ import annotations
 import logging
@@ -12,11 +17,54 @@ logger = logging.getLogger(__name__)
 
 _motor_client = None
 _db = None
+_mongo_unavailable = False   # set once a connection attempt fails, avoids retry storms
 
 
 async def get_db():
-    """Return None immediately to bypass MongoDB usage."""
-    return None
+    """
+    Lazily create and cache an async Motor database handle.
+
+    Returns the database, or ``None`` if Mongo is disabled in config or the
+    server cannot be reached (persistence then silently degrades).
+    """
+    global _motor_client, _db, _mongo_unavailable
+
+    if not settings.MONGO_ENABLED or _mongo_unavailable:
+        return None
+    if _db is not None:
+        return _db
+
+    try:
+        from motor.motor_asyncio import AsyncIOMotorClient
+
+        client = AsyncIOMotorClient(
+            settings.MONGODB_URL,
+            authSource=settings.MONGODB_AUTH_SOURCE,
+            serverSelectionTimeoutMS=settings.MONGODB_TIMEOUT_MS,
+            connectTimeoutMS=settings.MONGODB_TIMEOUT_MS,
+        )
+        # Force a round-trip so we fail fast if Mongo is down.
+        await client.admin.command("ping")
+        _motor_client = client
+        _db = client[settings.MONGODB_DB]
+        logger.info("✅ MongoDB connected: %s/%s", settings.MONGODB_URL, settings.MONGODB_DB)
+        return _db
+    except Exception as e:
+        _mongo_unavailable = True
+        logger.warning("⚠️  MongoDB unavailable (%s) — persistence disabled.", e)
+        return None
+
+
+async def close_db() -> None:
+    """Close the Mongo client on shutdown."""
+    global _motor_client, _db
+    if _motor_client is not None:
+        try:
+            _motor_client.close()
+        except Exception:
+            pass
+        _motor_client = None
+        _db = None
 
 
 # ─── Sessions ─────────────────────────────────────────────────────────────────

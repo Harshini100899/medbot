@@ -24,9 +24,13 @@ class Settings(BaseSettings):
     PORT: int = 8000
 
     # ── LLM Provider ──────────────────────────────────────────────────────────
-    LLM_PROVIDER: str = "ollama"       # ollama | openai | anthropic
+    LLM_PROVIDER: str = "ollama"       # ollama | openai | anthropic | groq
     LLM_TEMPERATURE: float = 0.1
     LLM_MAX_TOKENS: int = 2048
+
+    # Groq
+    GROQ_API_KEY: Optional[str] = None
+    GROQ_MODEL: str = "openai/gpt-oss-120b"
 
     # Ollama
     OLLAMA_BASE_URL: str = "http://localhost:11434"
@@ -40,14 +44,32 @@ class Settings(BaseSettings):
     ANTHROPIC_API_KEY: Optional[str] = None
     ANTHROPIC_MODEL: str = "claude-3-haiku-20240307"
 
+
     # ── Databases ─────────────────────────────────────────────────────────────
+    # Short-term memory (Redis) — session context, rolling history, cache, rate-limit
+    REDIS_ENABLED: bool = True
     REDIS_URL: str = "redis://localhost:6379"
     REDIS_TTL: int = 3600
+    REDIS_HISTORY_MAXLEN: int = 20        # rolling short-term messages kept per session
 
+    # Long-term persistence (MongoDB) — full conversation history + sessions
+    MONGO_ENABLED: bool = True
     MONGODB_URL: str = "mongodb://admin:password@localhost:27017"
     MONGODB_DB: str = "medbot"
+    MONGODB_AUTH_SOURCE: str = "admin"    # root user auth db for docker mongo
+    MONGODB_TIMEOUT_MS: int = 2000        # fail fast when Mongo is unreachable
 
     CHROMA_PERSIST_DIR: str = "./data/chroma_db"
+
+    # ── Observability (Langfuse) ──────────────────────────────────────────────
+    # Env-gated: tracing is a no-op unless both keys are provided.
+    LANGFUSE_PUBLIC_KEY: Optional[str] = None
+    LANGFUSE_SECRET_KEY: Optional[str] = None
+    LANGFUSE_HOST: str = "https://cloud.langfuse.com"   # or self-hosted, e.g. http://localhost:3000
+
+    @property
+    def langfuse_enabled(self) -> bool:
+        return bool(self.LANGFUSE_PUBLIC_KEY and self.LANGFUSE_SECRET_KEY)
 
     # ── Embeddings ────────────────────────────────────────────────────────────
     EMBEDDING_MODEL: str = "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
@@ -63,6 +85,8 @@ class Settings(BaseSettings):
 
     # ── CORS ──────────────────────────────────────────────────────────────────
     CORS_ORIGINS: List[str] = [
+        "http://localhost:8010",
+        "http://127.0.0.1:8010",
         "http://localhost:8000",
         "http://127.0.0.1:8000",
         "http://localhost:5500",
@@ -70,6 +94,7 @@ class Settings(BaseSettings):
         "http://localhost:3000",
         "http://localhost:8080",
     ]
+
 
     # ── RAG ───────────────────────────────────────────────────────────────────
     RAG_TOP_K: int = 5

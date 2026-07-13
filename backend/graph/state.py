@@ -7,15 +7,36 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 
-# ─── Intent types the Supervisor can classify ─────────────────────────────────
+# ─── Hierarchical routing (matches the 3-level architecture) ──────────────────
+#
+#   Level 1 — Supervisor (gateway router): cheap binary/tertiary classification
+#             into one of TOP_ROUTES.
+#   Level 2 — Medical Specialist  (clinical) OR  General Purpose (orchestrator).
+#   Level 3 — The General Purpose Agent dispatches to one of four sub-agents.
+#
+TOP_ROUTES = {
+    "emergency": "emergency_agent",          # fast-path, bypasses specialists
+    "medical":   "medical_specialist",       # clinical knowledge agent
+    "general":   "general_purpose",          # orchestrator over the sub-agents
+}
+
+# Level-3 sub-intents handled by the General Purpose orchestrator.
+GENERAL_SUBINTENTS = {
+    "doctor_search":  "doctor_search_agent",
+    "policy_rights":  "policy_rights_agent",
+    "location_maps":  "location_maps_agent",
+    "migrant_health": "migrant_health_agent",
+}
+
+# Legacy flat map kept for any callers that still classify a single intent.
 INTENTS = {
-    "emergency":        "emergency_agent",
-    "doctor_search":    "doctor_search_agent",
-    "medical_knowledge":"medical_knowledge_agent",
-    "policy_rights":    "policy_rights_agent",
-    "location_maps":    "medical_knowledge_agent",   # disabled maps_agent, route to medical_knowledge
-    "migrant_health":   "migrant_health_agent",
-    "general":          "medical_knowledge_agent",   # default fallback
+    "emergency":         "emergency_agent",
+    "doctor_search":     "doctor_search_agent",
+    "medical_knowledge": "medical_specialist",
+    "policy_rights":     "policy_rights_agent",
+    "location_maps":     "location_maps_agent",
+    "migrant_health":    "migrant_health_agent",
+    "general":           "medical_specialist",   # default fallback
 }
 
 
@@ -30,7 +51,8 @@ class MedBotState(TypedDict, total=False):
     language_confidence: float
 
     # ── Intent / Routing ──────────────────────────────────────────────────────
-    detected_intent: str             # one of INTENTS keys
+    top_level_route: str             # Level 1: emergency | medical | general
+    detected_intent: str             # Level 3 sub-intent (GENERAL_SUBINTENTS keys)
     intent_confidence: float
     active_agent: str                # agent currently handling the request
 

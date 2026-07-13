@@ -13,36 +13,46 @@ User (DE|EN|TR|UK)
         ▼
   FastAPI Gateway ─── SSE Streaming ──► Browser
         │
-  Language Processing
-  (langdetect + multilingual embeddings)
+  Language Detection (langdetect)  +  Medical Ontology (ICD-10-GM / SNOMED / MeSH)
         │
-  Medical Ontology Normalizer
-  (SNOMED-CT / ICD-10-GM / MeSH)
-        │
-  ┌─────▼──────────────────────────────────────┐
-  │   LEVEL 1 — SUPERVISOR AGENT (LangGraph)   │
-  │   Intent Classifier · ReACT · Delegation   │
-  └────────┬───────────────────────────────────┘
-           │ routes to one of six:
-    ┌──────▼──────────────────────────────────────────┐
-    │  LEVEL 2 — SIX SPECIALIST AGENTS               │
-    │  Emergency · Doctor Search · Medical Knowledge │
-    │  Policy & Rights · Location & Maps             │
-    │  Migrant & Refugee Health                      │
-    └──────┬──────────────────────────────────────────┘
-           │ uses:
-    ┌──────▼──────────────────────────────────────────┐
-    │  LEVEL 3 — SUB-AGENTS                          │
-    │  RAG Retrieval · Doctor Search · Policy RAG    │
-    │  Maps Sub-agent                                │
-    └──────┬──────────────────────────────────────────┘
-           │
-    ┌──────▼──────────────────────────────────────────┐
-    │  DATA LAYER                                     │
-    │  ChromaDB (vectors) · Redis (short-term)        │
-    │  MongoDB (long-term) · Tavily (web search)      │
-    └─────────────────────────────────────────────────┘
+  ┌─────▼───────────────────────────────────────────────┐
+  │  LEVEL 1 — SUPERVISOR AGENT (Gateway Router)        │
+  │  Cheap binary/tertiary classify: emergency | medical | general │
+  └───┬─────────────────────┬───────────────────────────┘
+      │ emergency           │ medical                     │ general
+      ▼                     ▼                             ▼
+ ┌─────────┐   ┌────────────────────────┐   ┌──────────────────────────────┐
+ │Emergency│   │ LEVEL 2 — MEDICAL      │   │ LEVEL 2 — GENERAL PURPOSE    │
+ │ (112)   │   │ SPECIALIST AGENT       │   │ AGENT (Orchestrator)         │
+ │fast-path│   │ (clinical knowledge)   │   │ LLM sub-intent routing       │
+ └────┬────┘   └───────────┬────────────┘   └──────────────┬───────────────┘
+      │                    │                 ┌─────────────┼──────────────┬────────────┐
+      │                    │                 ▼             ▼              ▼            ▼
+      │                    │        ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+      │                    │        │ LEVEL 3  │  │ LEVEL 3  │  │ LEVEL 3  │  │ LEVEL 3  │
+      │                    │        │ Doctor   │  │ Policy & │  │ Migrant  │  │  Maps    │
+      │                    │        │ Search   │  │ Rights   │  │ Health   │  │          │
+      │                    │        └────┬─────┘  └────┬─────┘  └────┬─────┘  └────┬─────┘
+      └────────────────────┴────────────┴─────────────┴─────────────┴────────────┘
+                                         │
+                            ┌────────────▼───────────────┐
+                            │  RESPONSE BUILDER          │
+                            │  multilingual · citations  │
+                            │  · disclaimer → SSE        │
+                            └────────────┬───────────────┘
+                                         │
+   ┌─────────────────────────────────────▼─────────────────────────────────────┐
+   │  MEMORY & OBSERVABILITY                                                     │
+   │  Redis (short-term: rolling history, cache, rate-limit)  ·  authoritative  │
+   │  MongoDB (long-term: durable conversation history)       ·  authoritative  │
+   │  LangGraph MemorySaver (in-process per-turn checkpointer) ·  fallback       │
+   │  Langfuse (tracing/observability, env-gated)  ·  Tavily (live web search)  │
+   └────────────────────────────────────────────────────────────────────────────┘
 ```
+
+> **Sub-agents use retrieval tools** in `backend/tools/` (arzt-auskunft scraper,
+> Tavily web search, policy RAG, maps/geocoding) — the agents own the reasoning,
+> the tools own the data access.
 
 ---
 
@@ -142,39 +152,42 @@ medbot/
 ├── backend/
 │   ├── main.py                  # FastAPI app entry point
 │   ├── config.py                # All settings (pydantic-settings)
-│   ├── llm_factory.py           # Ollama/OpenAI/Anthropic factory
-│   ├── agents/
-│   │   ├── supervisor_agent.py  # Intent classification + routing
-│   │   ├── emergency_agent.py   # 🚨 Fast-path 112 response
+│   ├── llm_factory.py           # Ollama/OpenAI/Anthropic/Groq factory
+│   ├── agents/                  # Level 1 + Level 2 (main agents)
+│   │   ├── supervisor_agent.py       # L1 gateway router: emergency|medical|general
+│   │   ├── general_purpose_agent.py  # L2 orchestrator: routes to sub-agents
+│   │   ├── medical_knowledge_agent.py# L2 Medical Specialist (clinical knowledge)
+│   │   └── emergency_agent.py        # 🚨 Fast-path 112 response
+│   ├── subagents/               # Level 3 (leaf sub-agents under General Purpose)
 │   │   ├── doctor_search_agent.py
-│   │   ├── medical_knowledge_agent.py
 │   │   ├── policy_rights_agent.py
-│   │   ├── location_maps_agent.py
-│   │   └── migrant_health_agent.py
-│   ├── subagents/
-│   │   ├── rag_retrieval_subagent.py
-│   │   ├── doctor_search_subagent.py
-│   │   ├── policy_rag_subagent.py
-│   │   └── maps_subagent.py
+│   │   ├── migrant_health_agent.py
+│   │   └── location_maps_agent.py
 │   ├── graph/
-│   │   ├── state.py             # LangGraph state definition
-│   │   └── supervisor_graph.py  # Main LangGraph StateGraph
+│   │   ├── state.py             # LangGraph state (TOP_ROUTES + GENERAL_SUBINTENTS)
+│   │   └── supervisor_graph.py  # Hierarchical StateGraph + persistence + Langfuse
 │   ├── memory/
-│   │   ├── redis_memory.py      # Short-term + rate limiting
-│   │   └── chroma_memory.py     # Vector store operations
+│   │   ├── redis_memory.py      # Short-term memory + cache + rate limiting
+│   │   └── chroma_memory.py     # Vector store operations (optional)
 │   ├── db/
-│   │   ├── mongodb.py           # Motor async MongoDB client
-│   │   └── seed_rag.py          # Seeds ChromaDB knowledge base
+│   │   ├── mongodb.py           # Motor async MongoDB persistence
+│   │   └── seed_rag.py          # Seeds ChromaDB knowledge base (optional)
+│   ├── observability/
+│   │   └── langfuse_tracer.py   # Env-gated Langfuse callback handler
 │   ├── language/
-│   │   ├── detector.py          # langdetect + DE/EN/TR/UK logic
-│   │   └── embeddings.py        # sentence-transformers wrapper
+│   │   └── detector.py          # langdetect + DE/EN/TR/UK logic
 │   ├── ontology/
 │   │   └── normalizer.py        # SNOMED-CT / ICD-10-GM / MeSH
 │   ├── response_builder/
 │   │   └── builder.py           # Assembles final response + disclaimers
-│   ├── tools/
-│   │   ├── web_search_tool.py   # Tavily async search
-│   │   └── maps_tool.py         # Google Maps + Nominatim geocoding
+│   ├── tools/                   # Retrieval tools (data access for the agents)
+│   │   ├── rag_retrieval_tool.py     # Medical knowledge RAG (Tavily)
+│   │   ├── doctor_search_tool.py     # arzt-auskunft scraper + Tavily
+│   │   ├── policy_rag_tool.py        # Policy/rights RAG
+│   │   ├── maps_search_tool.py       # Places + transit lookup
+│   │   ├── web_search_tool.py        # Tavily async search
+│   │   ├── arzt_auskunft_scraper.py  # arzt-auskunft.de HTML scraper
+│   │   └── maps_tool.py              # Google Maps + Nominatim geocoding
 │   └── api/
 │       ├── chat_router.py       # POST /api/chat/message
 │       ├── streaming_router.py  # GET  /api/stream/chat (SSE)
