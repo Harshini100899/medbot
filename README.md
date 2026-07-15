@@ -1,7 +1,7 @@
 # P4H MedBot — Oberhausen
 **Multilingual Medical AI Chatbot** · DE | EN | TR | UK
 
-A full-stack, production-ready medical chatbot built with **LangGraph multi-agent architecture**, FastAPI, Redis, MongoDB, and ChromaDB. Designed for Oberhausen residents — especially migrants, refugees, and non-German speakers — to navigate the German healthcare system.
+A full-stack, production-ready medical chatbot built with **LangGraph multi-agent architecture**, FastAPI, Redis, and MongoDB (with optional Langfuse observability). Designed for Oberhausen residents — especially migrants, refugees, and non-German speakers — to navigate the German healthcare system.
 
 ---
 
@@ -61,15 +61,16 @@ User (DE|EN|TR|UK)
 | Feature | Details |
 |---|---|
 | **Languages** | German, English, Turkish, Ukrainian (auto-detected) |
-| **6 Specialist Agents** | Emergency, Doctor Search, Medical Knowledge, Policy & Rights, Location & Maps, Migrant Health |
-| **RAG** | ChromaDB with multilingual sentence embeddings + Tavily web fallback |
+| **Hierarchical agents** | 1 supervisor (gateway) + 2 Level-2 agents (Medical Specialist, General Purpose orchestrator) + 4 Level-3 sub-agents (Doctor Search, Policy & Rights, Location & Maps, Migrant Health) + Emergency fast-path |
+| **RAG** | Live Tavily web search across trusted German medical/policy sites, with a static fallback knowledge base when Tavily is unavailable. *(ChromaDB code exists in the repo but is currently unused/disabled — see Database Services below.)* |
 | **Short-term Memory** | Redis (session context, rate limiting, 3600s TTL) |
 | **Long-term Memory** | MongoDB (conversation history, sessions) |
 | **Streaming** | Server-Sent Events (SSE) — real-time token-by-token response |
 | **Ontology** | SNOMED-CT, ICD-10-GM, MeSH local normalizer |
 | **Emergency Fast-path** | Instant 112 banner — bypasses all LLM calls |
 | **Graceful degradation** | Works without Redis/MongoDB/Tavily (reduced features) |
-| **LLM Agnostic** | Ollama (local) · OpenAI · Anthropic — switch via `.env` |
+| **Observability** | Langfuse tracing — env-gated, no-op without keys (see Observability section) |
+| **LLM Agnostic** | Ollama (local) · OpenAI · Anthropic · Groq — switch via `.env` |
 
 ---
 
@@ -78,8 +79,8 @@ User (DE|EN|TR|UK)
 | Tool | Version | Notes |
 |---|---|---|
 | Python | 3.10+ | Required |
-| Docker + Docker Compose | Any | For Redis & MongoDB |
-| Ollama | Latest | For local LLM (default) |
+| Docker + Docker Compose | Any | Optional — for Redis & MongoDB. The app runs with them disabled (graceful degradation); native installs (e.g. a local MongoDB service, Memurai/WSL for Redis) work too, no Docker required |
+| Ollama | Latest | Only if `LLM_PROVIDER=ollama` (default). Not needed for `openai`/`anthropic`/`groq` |
 | Git | Any | Optional |
 
 ---
@@ -103,7 +104,7 @@ This will:
 - Create `.env` from `.env.example`
 - Start Redis + MongoDB via Docker Compose
 - Pull the Ollama model (`llama3.2:3b` by default)
-- Seed ChromaDB with medical knowledge
+- Seed ChromaDB with medical knowledge *(legacy step — not read by the active agent pipeline, see Database Services)*
 
 ### 3. Edit `.env` (optional but recommended)
 ```bash
@@ -171,10 +172,10 @@ medbot/
 │   │   └── supervisor_graph.py  # Hierarchical StateGraph + persistence + Langfuse
 │   ├── memory/
 │   │   ├── redis_memory.py      # Short-term memory + cache + rate limiting
-│   │   └── chroma_memory.py     # Vector store operations (optional)
+│   │   └── chroma_memory.py     # Vector store ops — unused by the active pipeline (legacy)
 │   ├── db/
 │   │   ├── mongodb.py           # Motor async MongoDB persistence
-│   │   └── seed_rag.py          # Seeds ChromaDB knowledge base (optional)
+│   │   └── seed_rag.py          # Seeds ChromaDB — unused by the active pipeline (legacy)
 │   ├── observability/
 │   │   └── langfuse_tracer.py   # Env-gated Langfuse callback handler
 │   ├── language/
@@ -231,13 +232,16 @@ Response:
   "response": "...",
   "session_id": "uuid",
   "language": "en",
-  "intent": "medical_knowledge",
-  "agent": "medical_knowledge",
+  "intent": "policy_rights",
+  "agent": "supervisor",
   "is_emergency": false,
-  "sources": ["ChromaDB: medical_knowledge"],
+  "sources": [
+    {"title": "Doctor Search: arzt-auskunft.de / jameda.de / kvno.de", "url": "https://www.arzt-auskunft.de", "type": "doctor_search"}
+  ],
   "metadata": {}
 }
 ```
+> `intent` is one of the routing values from `TOP_ROUTES`/`GENERAL_SUBINTENTS` in `backend/graph/state.py` (e.g. `medical_knowledge`, `doctor_search`, `policy_rights`, `location_maps`, `migrant_health`, `emergency`). `agent` is currently always `"supervisor"` (hardcoded in `chat_router.py` for the UI) regardless of which node actually answered — check `intent` or the Langfuse trace to see the real node path.
 
 ### Streaming (SSE)
 ```http
@@ -342,7 +346,7 @@ Get a free API key at https://tavily.com (1000 searches/month free).
 ```env
 TAVILY_API_KEY=tvly-xxxxxxxxxxxxxxxx
 ```
-Without it, the bot falls back to local ChromaDB knowledge only.
+Without it, the bot falls back to the static in-code knowledge listed under Static Fallback Knowledge below.
 
 ---
 
@@ -359,11 +363,8 @@ Without it, the bot falls back to local ChromaDB knowledge only.
 - Session metadata
 - Doctor/pharmacy records
 
-### ChromaDB (Vector store)
-- Medical knowledge (8 topics seeded)
-- Policy & rights documents (2 seeded)
-- Session summaries
-- Multilingual cosine similarity search
+### ChromaDB (Vector store) — currently unused
+`backend/memory/chroma_memory.py` and `backend/db/seed_rag.py` implement a ChromaDB vector store, but the active agent pipeline (`rag_retrieval_tool.py`, `policy_rag_tool.py`) does not call into it — `backend/main.py` reports it as disabled (`ChromaDB: ⚠️ disabled (using live web search)`), and `/health` always returns `"chromadb": "disabled"`. Medical/policy knowledge instead comes from live Tavily web search plus a static in-code fallback (`STATIC_MEDICAL_KNOWLEDGE` in `rag_retrieval_tool.py`). Treat the ChromaDB code as legacy unless you re-wire the tools to use it.
 
 ---
 
@@ -376,7 +377,7 @@ Without it, the bot falls back to local ChromaDB knowledge only.
 | Türkçe | `tr` | ✅ | ✅ |
 | Українська | `uk` | ✅ (custom) | ✅ |
 
-The embeddings model (`paraphrase-multilingual-MiniLM-L12-v2`) handles all four languages natively for cross-lingual RAG retrieval.
+Language detection/response is handled by `backend/language/detector.py`. `EMBEDDING_MODEL` (`paraphrase-multilingual-MiniLM-L12-v2`, `backend/language/embeddings.py`) is configured but currently unused by the active pipeline — it was intended for the ChromaDB similarity search noted above, which is disabled. Actual retrieval (Tavily + static fallback) is keyword-based, not embedding-based.
 
 ---
 
@@ -388,7 +389,7 @@ Any message containing emergency keywords in DE/EN/TR/UK triggers the **Emergenc
 - Nearest hospitals in Oberhausen
 - Full emergency number table
 
-Keywords: `help`, `emergency`, `notruf`, `ambulanz`, `acil`, `допоможіть`, etc.
+Keywords (see `KEYWORD_RULES["emergency"]` in `backend/agents/supervisor_agent.py`): `112`, `911`, `ambulance`, `notfall`, `notruf`, `unconscious`/`ohnmächtig`, `heart attack`/`herzinfarkt`, `stroke`/`schlaganfall`, `can't breathe`/`not breathing`, `acil`, `dying`/`sterbe`, etc.
 
 ---
 
@@ -426,35 +427,36 @@ ollama pull llama3.2:3b
 ollama serve   # ensure running
 ```
 
-### ChromaDB errors
-```bash
-rm -rf data/chroma_db
-python -m backend.db.seed_rag
-```
+### Tavily web search failing (432 / rate-limited)
+The `medical_knowledge`/`policy_rights`/`migrant_health` agents fall back to the static knowledge listed below automatically — check your `TAVILY_API_KEY` at https://app.tavily.com if you want live results back.
 
-### Re-seed knowledge base
-```bash
-source .venv/bin/activate
-python -m backend.db.seed_rag
-```
+### ChromaDB / seed_rag.py
+These exist in the repo (`backend/memory/chroma_memory.py`, `backend/db/seed_rag.py`) but aren't called by the active pipeline — see the ChromaDB note under Database Services. Nothing to troubleshoot unless you've re-wired the tools to use it yourself.
 
 ---
 
-## 📊 Knowledge Base (Seeded)
+## 📊 Static Fallback Knowledge
 
-Medical topics in ChromaDB:
-1. Cold & Flu
-2. Fever management
-3. Chest pain assessment
-4. Hypertension
-5. Diabetes management
-6. Mental health resources
-7. COVID-19 guidance
-8. Vaccination schedule (Germany)
+Used when Tavily is unavailable/rate-limited — hardcoded in the tool files, not a database:
 
-Policy topics:
-1. GKV health insurance coverage
-2. Healthcare rights for asylum seekers (AsylbLG)
+`backend/tools/rag_retrieval_tool.py` (medical):
+1. Diabetes Management
+2. Hypertension (High Blood Pressure)
+3. Cold and Flu
+4. Fever Management
+5. COVID-19 Guidance
+6. Mental Health Resources in Germany
+7. Vaccination in Germany
+8. Chest Pain Assessment
+
+`backend/tools/policy_rag_tool.py` (policy/rights):
+1. Health Insurance in Germany (GKV/PKV)
+2. Health Rights for Asylum Seekers (Asylbewerberleistungsgesetz)
+3. Health Rights for EU Citizens
+4. Rights for Uninsured Patients
+5. Prescription Medications (Rezeptpflichtige Medikamente)
+6. Krankenversicherung in Deutschland (DE)
+7. Gesundheitsrechte für Asylsuchende (DE)
 
 ---
 
