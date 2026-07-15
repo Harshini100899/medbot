@@ -68,13 +68,21 @@ def get_langfuse_handler(
     except Exception as e:
         logger.warning("Langfuse v2 handler init failed (%s) — trying v3.", e)
 
-    # Langfuse v3 — handler reads global/env config; scope via metadata.
+    # Langfuse v3/v4 — handler reads credentials from env; session/user/metadata
+    # are attached per-run via the LangChain runnable config, not the constructor
+    # (see run_metadata() below, merged into graph.ainvoke(config=...)).
     try:
+        from langfuse import Langfuse  # type: ignore
         from langfuse.langchain import CallbackHandler  # type: ignore
 
-        md = {"langfuse_session_id": session_id, "langfuse_user_id": user_id}
-        md.update(metadata or {})
-        return CallbackHandler(metadata=md)
+        # v4 requires the client to exist before a CallbackHandler can find it;
+        # Langfuse() caches a singleton per public_key, so repeat calls are cheap.
+        Langfuse(
+            public_key=settings.LANGFUSE_PUBLIC_KEY,
+            secret_key=settings.LANGFUSE_SECRET_KEY,
+            host=settings.LANGFUSE_HOST,
+        )
+        return CallbackHandler(public_key=settings.LANGFUSE_PUBLIC_KEY)
     except ImportError:
         _import_failed = True
         logger.info("Langfuse not installed — observability disabled.")
@@ -82,6 +90,17 @@ def get_langfuse_handler(
     except Exception as e:
         logger.warning("Langfuse handler init failed (%s) — observability disabled.", e)
         return None
+
+
+def run_metadata(
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    metadata: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    """Runnable-config ``metadata`` dict that binds a LangChain run to a Langfuse session/user."""
+    md: Dict[str, Any] = {"langfuse_session_id": session_id, "langfuse_user_id": user_id}
+    md.update(metadata or {})
+    return md
 
 
 def flush() -> None:

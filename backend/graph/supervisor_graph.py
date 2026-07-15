@@ -47,7 +47,7 @@ from backend.db.mongodb import (
     save_conversation_turn,
     get_conversation_history,
 )
-from backend.observability.langfuse_tracer import get_langfuse_handler
+from backend.observability.langfuse_tracer import get_langfuse_handler, run_metadata
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,10 @@ def _run_config(session_id: str) -> Dict[str, Any]:
     )
     if handler is not None:
         config["callbacks"] = [handler]
+        config["metadata"] = run_metadata(
+            session_id=session_id,
+            metadata={"application": "p4h-medbot"},
+        )
     return config
 
 
