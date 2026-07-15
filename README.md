@@ -112,10 +112,13 @@ nano .env   # or any editor
 
 Key settings:
 ```env
-LLM_PROVIDER=ollama          # ollama | openai | anthropic
+LLM_PROVIDER=ollama          # ollama | openai | anthropic | groq
 OLLAMA_MODEL=medgemma        # Google MedGemma — medical-tuned (recommended)
 TAVILY_API_KEY=tvly-...      # get free at https://tavily.com (optional)
 OPENAI_API_KEY=sk-...        # only if using OpenAI instead of Ollama
+GROQ_API_KEY=gsk_...         # only if using Groq instead of Ollama
+LANGFUSE_PUBLIC_KEY=pk-lf-...  # optional — enables tracing, see Observability below
+LANGFUSE_SECRET_KEY=sk-lf-...  # optional
 ```
 
 > **Note:** Redis, MongoDB and ChromaDB are **optional**. The bot runs fully
@@ -294,6 +297,43 @@ LLM_PROVIDER=anthropic
 ANTHROPIC_API_KEY=sk-ant-...
 ANTHROPIC_MODEL=claude-3-haiku-20240307
 ```
+
+### Option D: Groq (fast hosted inference)
+```env
+LLM_PROVIDER=groq
+GROQ_API_KEY=gsk_...
+GROQ_MODEL=llama-3.3-70b-versatile
+```
+Get a free API key at https://console.groq.com/keys. Other supported models: `openai/gpt-oss-120b`, `llama-3.1-8b-instant`.
+
+---
+
+## 📈 Observability (Langfuse)
+
+Every LangGraph run (all node hops + every underlying LLM call) can be traced to [Langfuse](https://cloud.langfuse.com) for debugging and monitoring — prompts, tokens, latency, and full session replays in a web dashboard. It's **env-gated**: the app runs identically with or without it, and is a no-op until both keys below are set.
+
+### Setup
+1. Sign up free at https://cloud.langfuse.com and create a project.
+2. **Settings → API Keys → Create new API key**, copy the Public and Secret keys.
+3. Add to `.env`:
+   ```env
+   LANGFUSE_PUBLIC_KEY=pk-lf-...
+   LANGFUSE_SECRET_KEY=sk-lf-...
+   LANGFUSE_HOST=https://cloud.langfuse.com   # or your self-hosted URL
+   ```
+4. `langfuse` is already listed in `requirements.txt`; if it's not yet installed in your venv, run `pip install -r requirements.txt` (or `pip install langfuse` directly), then restart the server:
+   ```bash
+   python -m uvicorn backend.main:app --reload --host 0.0.0.0 --port 8000
+   ```
+5. Confirm it's active — the startup log prints:
+   ```
+   Langfuse: ✅ enabled (observability)
+   ```
+
+### Viewing traces
+Send any chat message, then open **cloud.langfuse.com → your project → Tracing**. Each conversation turn appears as a trace named after the `session_id`, showing the full node path (e.g. `supervisor → general_purpose → policy_rights_agent → response_builder`) and every Groq/OpenAI/Anthropic/Ollama call underneath it.
+
+> Implementation: [`backend/observability/langfuse_tracer.py`](backend/observability/langfuse_tracer.py) builds the LangChain `CallbackHandler`; [`backend/graph/supervisor_graph.py`](backend/graph/supervisor_graph.py) attaches it (plus `run_metadata()` for session/user linkage) to every `graph.ainvoke()`/`astream_events()` call.
 
 ---
 
