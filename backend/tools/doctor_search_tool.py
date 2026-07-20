@@ -22,74 +22,181 @@ FALLBACK_DOCTORS: List[Dict[str, Any]] = []
 # Static hospital fallback (disabled)
 FALLBACK_HOSPITALS: List[Dict[str, Any]] = []
 
-# Maps keywords → specialization name (for intent inference)
-SYMPTOM_SPECIALISATION_MAP = {
-    # Pediatrics
-    "children": "Pediatrics", "child": "Pediatrics", "kind": "Pediatrics",
-    "çocuk": "Pediatrics", "дитина": "Pediatrics", "kids": "Pediatrics",
-    # Cardiology
-    "heart": "Cardiology", "herz": "Cardiology", "cardiac": "Cardiology",
-    "kardiologie": "Cardiology", "cardio": "Cardiology",
-    # Dermatology
-    "skin": "Dermatology", "haut": "Dermatology", "rash": "Dermatology",
-    "dermatology": "Dermatology",
-    # Ophthalmology
-    "eye": "Ophthalmology", "auge": "Ophthalmology", "vision": "Ophthalmology",
-    "augen": "Ophthalmology",
-    # Dentistry
-    "dental": "Dentistry", "zahn": "Dentistry", "teeth": "Dentistry",
-    # Psychiatry
-    "mental": "Psychiatry & Psychotherapy", "psychisch": "Psychiatry & Psychotherapy",
-    "depression": "Psychiatry & Psychotherapy", "anxiety": "Psychiatry & Psychotherapy",
-    # Gynecology
-    "women": "Gynecology", "frau": "Gynecology", "pregnancy": "Gynecology",
-    "schwanger": "Gynecology", "gyneco": "Gynecology",
-    # Orthopedics
-    "bone": "Orthopedics", "knochen": "Orthopedics", "joint": "Orthopedics",
-    "ortho": "Orthopedics", "back pain": "Orthopedics",
-    # Pulmonology
-    "lung": "Pulmonology", "lunge": "Pulmonology", "asthma": "Pulmonology",
-    "breathing": "Pulmonology",
-    # Diabetology
-    "diabetes": "Diabetology & Endocrinology", "diabetic": "Diabetology & Endocrinology",
-    "diabetiker": "Diabetology & Endocrinology", "blutzucker": "Diabetology & Endocrinology",
-    "insulin": "Diabetology & Endocrinology", "endocrin": "Diabetology & Endocrinology",
-    # Neurology
-    "neuro": "Neurology", "neurology": "Neurology", "stroke": "Neurology",
-    "migraine": "Neurology", "migräne": "Neurology",
-    # ENT
-    "ent": "ENT (Ear, Nose, Throat)", "ear": "ENT (Ear, Nose, Throat)",
-    "nose": "ENT (Ear, Nose, Throat)", "throat": "ENT (Ear, Nose, Throat)",
-    "hno": "ENT (Ear, Nose, Throat)",
-    # Internal Medicine
-    "internal": "Internal Medicine", "innere": "Internal Medicine",
-    "gastro": "Internal Medicine", "digestion": "Internal Medicine",
-}
-
-SPECIALISATION_GERMAN_MAP = {
-    "Pediatrics": "Kinderarzt Kinderheilkunde",
-    "Cardiology": "Kardiologe Kardiologie",
-    "Dermatology": "Hautarzt Dermatologe Dermatologie",
-    "Ophthalmology": "Augenarzt Augenheilkunde",
-    "Dentistry": "Zahnarzt",
-    "Psychiatry & Psychotherapy": "Psychotherapeut Psychiater Psychotherapie",
-    "Gynecology": "Frauenarzt Gynäkologe Gynäkologie",
-    "Orthopedics": "Orthopäde Orthopädie",
-    "Pulmonology": "Lungenarzt Pneumologe Pneumologie",
-    "Diabetology & Endocrinology": "Diabetologe Diabetes",
-    "Neurology": "Neurologe Neurologie",
-    "ENT (Ear, Nose, Throat)": "HNO Arzt Hals-Nasen-Ohrenarzt",
-    "Internal Medicine": "Internist Hausarzt Allgemeinmedizin",
+# ─── Single source of truth for doctor specialties ─────────────────────────
+# Consolidates what used to be three independently-drifting dicts:
+#   - keyword -> specialty name        (was SYMPTOM_SPECIALISATION_MAP here)
+#   - specialty name -> arzt-auskunft.de URL slug (was MAPPED_KEYWORDS in
+#     arzt_auskunft_scraper.py -- that file no longer has ANY specialty
+#     knowledge of its own, so it can't silently fall out of sync again)
+#   - specialty name -> German search term (was SPECIALISATION_GERMAN_MAP)
+#
+# Entry order matters: infer_specialisation() is first-match-wins, so entries
+# whose keywords are substrings of a more specific term's keywords (e.g.
+# "therapy" inside "physiotherapy") MUST be ordered after the more specific
+# entry, or every physio query gets misrouted to psychiatry. See inline notes.
+SPECIALTY_REGISTRY: Dict[str, Dict[str, Any]] = {
+    "Pediatrics": {
+        "keywords": ["children", "child", "kind", "çocuk", "дитина", "kids"],
+        "arzt_auskunft_slug": "kinderheilkunde-kinder-und-jugendmedizin",
+        "german_search_term": "Kinderarzt Kinderheilkunde",
+    },
+    "Cardiology": {
+        "keywords": ["heart", "herz", "cardiac", "kardiologie", "cardio"],
+        "arzt_auskunft_slug": "innere-medizin-und-kardiologie",
+        "german_search_term": "Kardiologe Kardiologie",
+    },
+    "Dermatology": {
+        # "dermatolog" (not the full word "dermatology") so it matches both
+        # "dermatology" and "dermatologist" as a substring.
+        "keywords": ["skin", "haut", "rash", "dermatolog"],
+        "arzt_auskunft_slug": "haut-und-geschlechtskrankheiten",
+        "german_search_term": "Hautarzt Dermatologe Dermatologie",
+    },
+    "Ophthalmology": {
+        "keywords": ["eye", "auge", "vision", "augen", "ophthalmolog"],
+        "arzt_auskunft_slug": "augenheilkunde",
+        "german_search_term": "Augenarzt Augenheilkunde",
+    },
+    "Dentistry": {
+        "keywords": ["dental", "zahn", "teeth", "dentist"],
+        "arzt_auskunft_slug": "zahnmedizin",
+        "german_search_term": "Zahnarzt",
+    },
+    # Physiotherapy — MUST come before Psychiatry below: "physiotherapy"/
+    # "physiotherapist"/German "Physiotherapeut" all contain "therapy"/
+    # "therapist"/"therapeut" as substrings, so this has to win the
+    # first-match-wins scan or every physio query gets misrouted to psychiatry.
+    # arzt_auskunft_slug is None: physiotherapists aren't "Ärzte" (physicians),
+    # so this physician-only directory has no category for them at all --
+    # find_doctors() falls back to the general city page + text filtering.
+    "Physiotherapy": {
+        "keywords": ["physiotherap", "physio", "krankengymnastik"],
+        "arzt_auskunft_slug": None,
+        "german_search_term": "Physiotherapeut Krankengymnastik",
+    },
+    "Psychiatry & Psychotherapy": {
+        "keywords": [
+            "mental", "psychisch", "depression", "depressed", "anxiety", "anxious",
+            "therapist", "therapy", "psychotherapist", "psychiatrist", "psychologist",
+            "counselor", "counsellor", "psychiater", "psychotherapeut", "therapeut",
+            "psychiatrie", "psychotherapy", "psychiatr", "psych",
+        ],
+        "arzt_auskunft_slug": "psychiatrie-und-psychotherapie",
+        "german_search_term": "Psychotherapeut Psychiater Psychotherapie",
+    },
+    "Gynecology": {
+        "keywords": ["women", "frau", "pregnancy", "schwanger", "gyneco"],
+        "arzt_auskunft_slug": "frauenheilkunde-und-geburtshilfe",
+        "german_search_term": "Frauenarzt Gynäkologe Gynäkologie",
+    },
+    "Orthopedics": {
+        "keywords": ["bone", "knochen", "joint", "ortho", "orthoped", "back pain"],
+        "arzt_auskunft_slug": "orthopaedie",
+        "german_search_term": "Orthopäde Orthopädie",
+    },
+    "Pulmonology": {
+        "keywords": ["lung", "lunge", "asthma", "breathing"],
+        "arzt_auskunft_slug": None,  # no dedicated arzt-auskunft.de category
+        "german_search_term": "Lungenarzt Pneumologe Pneumologie",
+    },
+    "Diabetology & Endocrinology": {
+        "keywords": ["diabetes", "diabetic", "diabetiker", "diabetolog", "blutzucker", "insulin", "endocrin"],
+        "arzt_auskunft_slug": "innere-medizin-und-endokrinologie-und-diabetologie",
+        "german_search_term": "Diabetologe Diabetes",
+    },
+    "Neurology": {
+        "keywords": ["neuro", "neurology", "stroke", "migraine", "migräne", "neurolog"],
+        "arzt_auskunft_slug": "neurologie",
+        "german_search_term": "Neurologe Neurologie",
+    },
+    # ENT — bare "ent"/"ear"/"nose" deliberately avoided: they're substrings of
+    # unrelated common words ("appointment", "treatment", "near", "diagnose")
+    # that have nothing to do with ENT care. Use specific phrases instead.
+    "ENT (Ear, Nose, Throat)": {
+        "keywords": [
+            "earache", "ear infection", "ear pain", "sore throat", "throat",
+            "runny nose", "blocked nose", "sinus", "ent specialist", "ent doctor",
+            "hno", "hals", "ohrenschmerzen", "halsschmerzen",
+        ],
+        "arzt_auskunft_slug": "hals-nasen-ohrenheilkunde",
+        "german_search_term": "HNO Arzt Hals-Nasen-Ohrenarzt",
+    },
+    "Internal Medicine": {
+        "keywords": ["internal", "innere", "gastro", "digestion"],
+        "arzt_auskunft_slug": None,  # no dedicated arzt-auskunft.de category
+        "german_search_term": "Internist Hausarzt Allgemeinmedizin",
+    },
+    # General Practitioner -- previously ONLY existed in arzt_auskunft_scraper.py's
+    # MAPPED_KEYWORDS (mapped to a real slug) with no equivalent in
+    # SYMPTOM_SPECIALISATION_MAP, so infer_specialisation("I need a GP") always
+    # returned None even though the scraper had a slug ready for it. Fixed by
+    # consolidation.
+    "General Practitioner": {
+        "keywords": ["gp", "general", "hausarzt", "allgemein"],
+        "arzt_auskunft_slug": "allgemeinmedizin",
+        "german_search_term": "Hausarzt Allgemeinmedizin",
+    },
 }
 
 
 def infer_specialisation(query: str) -> Optional[str]:
     """Infer the needed specialisation from free text keywords."""
     q = query.lower()
-    for keyword, spec in SYMPTOM_SPECIALISATION_MAP.items():
-        if keyword in q:
-            return spec
+    for specialty, entry in SPECIALTY_REGISTRY.items():
+        if any(kw in q for kw in entry["keywords"]):
+            return specialty
     return None
+
+
+SPECIALTY_CLASSIFIER_PROMPT = """Classify this healthcare query into ONE of these known specialties:
+{specialty_list}
+
+If it names a specialty not exactly listed, map it to the closest matching category above.
+
+EXAMPLES:
+Query: "find me an audiologist for hearing loss"
+Output: {{"specialty": "ENT (Ear, Nose, Throat)"}}
+Query: "I need a rheumatologist for joint pain"
+Output: {{"specialty": "Orthopedics"}}
+Query: "looking for an oncologist"
+Output: {{"specialty": "Internal Medicine"}}
+
+Respond with ONLY valid JSON: {{"specialty": "<exact name from the list above, or null if truly nothing fits>"}}
+No explanation, no markdown, just the JSON.
+
+Query: {query}
+"""
+
+
+async def _infer_specialisation_llm(query: str) -> Optional[str]:
+    """LLM fallback for when infer_specialisation()'s keyword registry finds
+    no match -- covers specialty names/phrasings the registry can't enumerate
+    (e.g. "audiologist", "rheumatologist"), mapping to the closest known
+    SPECIALTY_REGISTRY entry so slug/german-term lookup still works downstream.
+    Only called from find_doctors(); never from the cheap routing-level checks."""
+    try:
+        import json
+        import re as _re
+        from backend.llm_factory import get_llm
+        from langchain_core.messages import SystemMessage
+
+        specialty_list = "\n".join(f"- {name}" for name in SPECIALTY_REGISTRY)
+        llm = get_llm(temperature=0.0)
+        resp = await llm.ainvoke([
+            SystemMessage(content=SPECIALTY_CLASSIFIER_PROMPT.format(
+                specialty_list=specialty_list, query=query,
+            )),
+        ])
+        raw = resp.content.strip()
+        json_match = _re.search(r"\{.*\}", raw, _re.DOTALL)
+        if not json_match:
+            return None
+        parsed = json.loads(json_match.group())
+        specialty = parsed.get("specialty")
+        return specialty if specialty in SPECIALTY_REGISTRY else None
+    except Exception as e:
+        logger.warning(f"Specialty LLM fallback failed: {e}")
+        return None
 
 
 def clean_doctor_name(title: str) -> str:
@@ -116,7 +223,7 @@ async def _tavily_doctor_search(
     try:
         import re
         from backend.tools.web_search_tool import web_search, DOCTOR_SEARCH_DOMAINS
-        german_term = SPECIALISATION_GERMAN_MAP.get(specialization, specialization or query)
+        german_term = SPECIALTY_REGISTRY.get(specialization, {}).get("german_search_term") or specialization or query
         search_query = f"{german_term} Arzt {city}"
         results = await web_search(
             search_query,
@@ -245,6 +352,23 @@ async def find_doctors(
     {doctors: [...], hospitals: [...], inferred_specialisation: str|None, city: str}
     """
     inferred = specialization or infer_specialisation(query)
+    if not inferred:
+        # Keyword registry found nothing -- ask the LLM to map novel specialty
+        # phrasings (e.g. "audiologist", "rheumatologist") to the closest known
+        # SPECIALTY_REGISTRY entry, instead of silently giving up. This is a
+        # deliberately narrow fallback: only invoked here (not from the cheap
+        # routing-level checks in supervisor_agent.py / detect_and_search_doctors_inline),
+        # since find_doctors() is already a multi-step network operation where
+        # one more classification call is a proportionally small cost.
+        inferred = await _infer_specialisation_llm(query)
+
+    entry = SPECIALTY_REGISTRY.get(inferred, {})
+    arzt_auskunft_slug = entry.get("arzt_auskunft_slug")
+    # German terms to filter by when the arzt-auskunft.de page we load isn't
+    # already specialty-specific (e.g. no dedicated URL slug for this
+    # specialty) -- lets the scraper discard wrong-specialty doctors instead
+    # of silently returning whatever's on the unfiltered general city page.
+    filter_keywords = entry.get("german_search_term", "").split() or None
 
     # 1. Run direct scraper
     scraped_doctors = []
@@ -252,9 +376,10 @@ async def find_doctors(
         logger.info("Running direct scraper for doctors")
         scraped_doctors = await scrape_arzt_auskunft(
             query=query,
-            specialization=inferred,
+            arzt_auskunft_slug=arzt_auskunft_slug,
             city=city,
             limit=limit,
+            filter_keywords=filter_keywords,
         )
     except Exception as e:
         logger.error(f"Direct scraper error: {e}")
@@ -308,7 +433,10 @@ async def detect_and_search_doctors_inline(user_input: str, lang: str) -> Dict[s
     search_keywords = [
         "find", "search", "recommend", "look for", "suchen", "finden", "empfehlen", "bul", "ara", "знайти", "шукати"
     ]
-    has_doctor = any(dk in t for dk in doctor_keywords)
+    # Also trigger on any recognised medical specialty name (e.g. "gynecologist",
+    # "cardiologist") even without a generic word like "doctor"/"arzt" present —
+    # reuses infer_specialisation()'s specialty map as the single source of truth.
+    has_doctor = any(dk in t for dk in doctor_keywords) or infer_specialisation(user_input) is not None
     has_search = any(sk in t for sk in search_keywords)
     has_direct_city = "oberhausen" in t and has_doctor
     

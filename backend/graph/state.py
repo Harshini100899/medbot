@@ -7,6 +7,19 @@ from langchain_core.messages import BaseMessage
 from langgraph.graph.message import add_messages
 
 
+def _reset_or_append(
+    existing: List[Dict[str, Any]], new: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
+    """Reducer for ``agent_outputs``: concatenates within a turn, but treats an
+    empty write as an explicit reset (LangGraph's BinaryOperatorAggregate folds
+    every update onto the persisted checkpoint value, so a plain ``operator.add``
+    write of ``[]`` would be a no-op and stale entries would leak into the next
+    conversation turn on the same checkpointed thread)."""
+    if not new:
+        return []
+    return existing + new
+
+
 # ─── Hierarchical routing (matches the 3-level architecture) ──────────────────
 #
 #   Level 1 — Supervisor (gateway router): cheap binary/tertiary classification
@@ -52,14 +65,24 @@ class MedBotState(TypedDict, total=False):
 
     # ── Intent / Routing ──────────────────────────────────────────────────────
     top_level_route: str             # Level 1: emergency | medical | general
-    detected_intent: str             # Level 3 sub-intent (GENERAL_SUBINTENTS keys)
+    detected_intent: str             # Level 3 primary sub-intent (GENERAL_SUBINTENTS keys)
+    active_intents: List[str]        # Level 3 sub-intents selected this turn (fan-out capable)
     intent_confidence: float
-    active_agent: str                # agent currently handling the request
+    active_agent: str                # agent(s) that handled the request, "+"-joined if multiple
 
-    # ── Agent Output ──────────────────────────────────────────────────────────
+    # ── Agent Output ────────────────────────────────────────────────────────────
+    # Single-writer path: used by emergency_agent / medical_knowledge_agent, which
+    # never run in parallel with another agent in the same turn.
     agent_raw_output: str            # answer from specialist agent
     sources: List[Dict[str, Any]]    # cited sources [{title, url, snippet}]
     retrieved_docs: List[str]        # RAG documents used
+
+    # Fan-out path: each General Purpose sub-agent appends one entry here instead
+    # of writing the flat fields above, since 2+ of them may run in the same graph
+    # super-step (LangGraph forbids concurrent writes to un-annotated keys). Reset
+    # to [] by response_builder every turn so it doesn't leak across conversation
+    # turns on the checkpointed thread.
+    agent_outputs: Annotated[List[Dict[str, Any]], _reset_or_append]
 
     # ── Flags ─────────────────────────────────────────────────────────────────
     is_emergency: bool               # triggers emergency banner

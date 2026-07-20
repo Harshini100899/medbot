@@ -29,6 +29,21 @@ GUIDELINES FOR RECOMMENDATION:
 4. **General Practitioner ('Hausarzt') Rule**: Remind the user that for general or new symptoms, they should first visit a General Practitioner (Hausarzt) who can provide a referral ('Überweisung') to specialists if needed.
 5. **After-Hours Care**: If the request is for after-hours or weekend medical assistance that is NOT a life-threatening emergency, instruct them to call the national doctor-on-call service at **116 117** (Ärztlicher Bereitschaftsdienst) or visit the nearest standby practice ('Bereitschaftspraxis').
 6. **Tone & Empathy**: Maintain a warm, welcoming, and reassuring tone. Many users are newcomers, refugees, or non-native speakers who find the German medical bureaucracy overwhelming. Be extremely clear and step-by-step.
+7. **Clickable Profile Links**: Every doctor listed above has a "Profile Link". You MUST format each doctor's name as a clickable markdown link to that URL, exactly like this:
+   `[Herr/Frau Dr. Name](Profile Link) (Specialization) - Address: ..., Phone: ...`
+   Never omit the link and never invent a URL that isn't in the data above.
+8. **Response Hygiene**: Do NOT add a generic "if this is a life-threatening emergency, call 112" line — that is automatically appended once at the end of the final response, so repeating it is redundant. Do NOT end with a generic warm sign-off (e.g. "take care of yourself", "don't hesitate to reach out") — your response may be combined with another agent's answer, so stop as soon as you've given the doctor recommendations and booking info.
+
+EXAMPLE (this is the required format — follow it exactly):
+Given this entry in AVAILABLE DOCTORS / FACILITIES:
+  - Herr Gerhard Bongers | Facharzt für Psychiatrie und Psychotherapie
+    Address: Bahnhofstraße 64, 46145 Oberhausen-Sterkrade
+    Phone: 02 0866 00 40
+    Languages: de
+    KVNO/GKV: Yes
+    Profile Link: https://www.arzt-auskunft.de/psychiatrie-und-psychotherapie/oberhausen-rheinland/12345
+You must write it as:
+  [Herr Gerhard Bongers](https://www.arzt-auskunft.de/psychiatrie-und-psychotherapie/oberhausen-rheinland/12345) (Facharzt für Psychiatrie und Psychotherapie) - Address: Bahnhofstraße 64, 46145 Oberhausen-Sterkrade, Phone: 02 0866 00 40
 
 Inferred specialisation needed: {inferred_spec}
 """
@@ -44,10 +59,9 @@ def _format_doctor_list(doctors: list, hospitals: list) -> str:
                 f"    Address: {d.get('address','N/A')}\n"
                 f"    Phone: {d.get('phone','N/A')}\n"
                 f"    Languages: {', '.join(d.get('languages', []))}\n"
-                f"    KVNO/GKV: {'Yes' if d.get('kvno_accepted') else 'No'}"
+                f"    KVNO/GKV: {'Yes' if d.get('kvno_accepted') else 'No'}\n"
+                f"    Profile Link: {d.get('source_url', 'N/A')}"
             )
-            if d.get("maps_url"):
-                entry += f"\n    Directions: {d['maps_url']}"
             parts.append(entry)
     if hospitals:
         parts.append("\nHOSPITALS (A&E / Emergency):")
@@ -56,6 +70,37 @@ def _format_doctor_list(doctors: list, hospitals: list) -> str:
                 f"  - {h.get('name','N/A')} | {h.get('address','N/A')} | 📞 {h.get('phone','N/A')}"
             )
     return "\n".join(parts)
+
+
+def _format_doctor_list_markdown(doctors: list, hospitals: list) -> str:
+    """User-facing fallback formatter (used when the LLM call itself fails) --
+    unlike _format_doctor_list (which builds the raw prompt context for the
+    LLM), this produces the same polished, clickable-link output the LLM is
+    normally instructed to produce, so a failed LLM call doesn't dump internal
+    debug-style formatting straight to the user."""
+    if not doctors:
+        return (
+            "I couldn't find any listings for this specialty in Oberhausen right now. "
+            "Try searching jameda.de or arzt-auskunft.de directly, or ask again in a moment."
+        )
+    lines = ["Here are some healthcare providers I found for you:\n"]
+    for d in doctors:
+        name = d.get("name", "N/A")
+        url = d.get("source_url")
+        title = f"[{name}]({url})" if url else name
+        langs = ", ".join(d.get("languages", [])) or "N/A"
+        gkv = "Yes" if d.get("kvno_accepted") else "No"
+        phone = d.get("phone") or "N/A"
+        lines.append(
+            f"- {title} ({d.get('specialization', 'N/A')}) - "
+            f"Address: {d.get('address', 'N/A')}, Phone: {phone} "
+            f"(Languages: {langs}, GKV: {gkv})"
+        )
+    if hospitals:
+        lines.append("\n**Hospitals (A&E / Emergency):**")
+        for h in hospitals:
+            lines.append(f"- {h.get('name', 'N/A')} — {h.get('address', 'N/A')} — 📞 {h.get('phone', 'N/A')}")
+    return "\n".join(lines)
 
 
 async def run_doctor_search_agent(state: MedBotState) -> MedBotState:
@@ -85,20 +130,20 @@ async def run_doctor_search_agent(state: MedBotState) -> MedBotState:
         answer = resp.content.strip()
     except Exception as e:
         logger.error(f"Doctor search LLM error: {e}")
-        answer = "I found some healthcare providers for you:\n\n" + doctor_info
+        answer = _format_doctor_list_markdown(doctors, hospitals)
 
     sources = [
-        {"type": "database", "title": d.get("name", ""), "url": d.get("maps_url", "")}
+        {"type": "web", "title": d.get("name", ""), "url": d.get("source_url", "")}
         for d in doctors[:3]
     ]
 
     return {
-        **state,
-        "active_agent": "doctor_search_agent",
-        "agent_raw_output": answer,
-        "sources": sources,
-        "needs_disclaimer": True,
-        "needs_maps": False,
-        "is_emergency": False,
-        "extra_context": {"doctors": doctors, "hospitals": hospitals},
+        "agent_outputs": [{
+            "agent": "doctor_search_agent",
+            "output": answer,
+            "sources": sources,
+            "needs_disclaimer": True,
+            "needs_maps": False,
+            "extra": {"doctors": doctors, "hospitals": hospitals},
+        }],
     }

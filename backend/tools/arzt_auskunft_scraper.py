@@ -11,49 +11,13 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# Detailed mapping from query keywords to arzt-auskunft slugs
-MAPPED_KEYWORDS = {
-    "diabetes": "innere-medizin-und-endokrinologie-und-diabetologie",
-    "diabetolog": "innere-medizin-und-endokrinologie-und-diabetologie",
-    "diabetiker": "innere-medizin-und-endokrinologie-und-diabetologie",
-    "cardio": "innere-medizin-und-kardiologie",
-    "herz": "innere-medizin-und-kardiologie",
-    "heart": "innere-medizin-und-kardiologie",
-    "pediatr": "kinderheilkunde-kinder-und-jugendmedizin",
-    "kinder": "kinderheilkunde-kinder-und-jugendmedizin",
-    "kind": "kinderheilkunde-kinder-und-jugendmedizin",
-    "child": "kinderheilkunde-kinder-und-jugendmedizin",
-    "dermatolog": "haut-und-geschlechtskrankheiten",
-    "skin": "haut-und-geschlechtskrankheiten",
-    "haut": "haut-und-geschlechtskrankheiten",
-    "ent": "hals-nasen-ohrenheilkunde",
-    "hno": "hals-nasen-ohrenheilkunde",
-    "hals": "hals-nasen-ohrenheilkunde",
-    "ohn": "hals-nasen-ohrenheilkunde",
-    "eye": "augenheilkunde",
-    "ophthalmolog": "augenheilkunde",
-    "auge": "augenheilkunde",
-    "neurolog": "neurologie",
-    "gynecolog": "frauenheilkunde-und-geburtshilfe",
-    "frauen": "frauenheilkunde-und-geburtshilfe",
-    "women": "frauenheilkunde-und-geburtshilfe",
-    "orthoped": "orthopaedie",
-    "orthop": "orthopaedie",
-    "knochen": "orthopaedie",
-    "bone": "orthopaedie",
-    "psychiatrie": "psychiatrie-und-psychotherapie",
-    "psychotherapy": "psychiatrie-und-psychotherapie",
-    "psychotherapeut": "psychiatrie-und-psychotherapie",
-    "therapeut": "psychiatrie-und-psychotherapie",
-    "psychiatr": "psychiatrie-und-psychotherapie",
-    "psych": "psychiatrie-und-psychotherapie",
-    "dentist": "zahnmedizin",
-    "zahn": "zahnmedizin",
-    "gp": "allgemeinmedizin",
-    "general": "allgemeinmedizin",
-    "hausarzt": "allgemeinmedizin",
-    "allgemein": "allgemeinmedizin",
-}
+# NOTE: this module intentionally carries NO specialty-keyword knowledge of
+# its own (it used to have a MAPPED_KEYWORDS dict here that independently
+# re-derived specialty->slug mappings from raw keywords -- that duplication is
+# exactly what let it drift out of sync with doctor_search_tool.py's own
+# keyword map, causing the same specialty bug to resurface twice). Callers now
+# resolve the specialty via doctor_search_tool.SPECIALTY_REGISTRY and pass the
+# already-known arzt_auskunft_slug + filter_keywords directly.
 
 
 async def fetch_phone(client: httpx.AsyncClient, url: str) -> str:
@@ -74,29 +38,24 @@ async def fetch_phone(client: httpx.AsyncClient, url: str) -> str:
 
 async def scrape_arzt_auskunft(
     query: str,
-    specialization: Optional[str] = None,
+    arzt_auskunft_slug: Optional[str] = None,
     city: str = "Oberhausen",
     limit: int = 5,
+    filter_keywords: Optional[List[str]] = None,
 ) -> List[Dict[str, Any]]:
     """
-    Directly scrape arzt-auskunft.de for doctor listings matching query or specialization.
+    Directly scrape arzt-auskunft.de for doctor listings. `arzt_auskunft_slug`
+    (if any) must already be resolved by the caller via
+    doctor_search_tool.SPECIALTY_REGISTRY -- this function has no specialty
+    knowledge of its own.
     """
     # Normalize city slug
     city_slug = "oberhausen-rheinland" if city.lower() == "oberhausen" else city.lower().replace(" ", "-")
 
-    # Determine specialization slug from specialization name or query keywords
-    spec_slug = None
-    search_term = (specialization or query).lower()
-    
-    for kw, slug in MAPPED_KEYWORDS.items():
-        if kw in search_term:
-            spec_slug = slug
-            break
-
     # Build potential URLs (prioritize specific specialty page, fall back to city page)
     urls = []
-    if spec_slug:
-        urls.append(f"https://www.arzt-auskunft.de/{spec_slug}/{city_slug}/")
+    if arzt_auskunft_slug:
+        urls.append(f"https://www.arzt-auskunft.de/{arzt_auskunft_slug}/{city_slug}/")
     urls.append(f"https://www.arzt-auskunft.de/{city_slug}/")
 
     headers = {
@@ -116,9 +75,14 @@ async def scrape_arzt_auskunft(
             async with httpx.AsyncClient(timeout=8.0, headers=headers) as client:
                 resp = await client.get(url)
                 if resp.status_code == 200:
-                    # Site sends UTF-8 with some Windows-1252 characters mixed in
-                    # Use errors='replace' to handle unmappable bytes gracefully
-                    html = resp.content.decode("windows-1252", errors="replace")
+                    # Site serves UTF-8; decoding real UTF-8 bytes as windows-1252
+                    # mangles every umlaut into mojibake (e.g. "ü" -> "Ã¼"). Try
+                    # UTF-8 first and only fall back to windows-1252 (replacing
+                    # unmappable bytes) if the response genuinely isn't UTF-8.
+                    try:
+                        html = resp.content.decode("utf-8")
+                    except UnicodeDecodeError:
+                        html = resp.content.decode("windows-1252", errors="replace")
                     source_url = url
                     break
                 else:
@@ -176,16 +140,17 @@ async def scrape_arzt_auskunft(
         except Exception as parse_error:
             logger.error(f"Error parsing doctor card: {parse_error}")
 
-    # If we fell back to the main city page but had a specific specialization, filter results
-    if spec_slug and source_url == urls[-1]:
-        filtered = []
-        # Find matching keywords in specialty text
-        spec_keywords = [k for k, v in MAPPED_KEYWORDS.items() if v == spec_slug]
-        for d in doctors:
-            if any(kw in d["specialization"].lower() for kw in spec_keywords):
-                filtered.append(d)
-        if filtered:
-            doctors = filtered
+    # If we fell back to the main (unfiltered) city page but a specific
+    # specialization was requested, keep only doctors whose listed specialty
+    # actually matches -- rather than silently presenting unrelated specialists
+    # (e.g. psychiatrists for a physiotherapy search) as if they were relevant.
+    # Covers specialties with no dedicated arzt-auskunft.de URL slug too
+    # (arzt_auskunft_slug is None), since filter_keywords doesn't depend on it.
+    if source_url == urls[-1] and filter_keywords:
+        doctors = [
+            d for d in doctors
+            if any(kw.lower() in d["specialization"].lower() for kw in filter_keywords)
+        ]
 
     # Fetch phone numbers concurrently for the selected doctors
     selected_doctors = doctors[:limit]

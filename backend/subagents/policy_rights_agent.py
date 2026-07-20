@@ -23,6 +23,10 @@ Your task is to answer health insurance and rights-related questions using the l
 CONTEXT (LATEST LIVE WEB SEARCH DATA & LOCAL RESOURCES):
 {context}
 
+SOURCE ATTRIBUTION (MANDATORY, applies to every section below):
+- Every factual claim you make (coverage rules, session limits, legal rights, procedures) that comes from the CONTEXT above MUST be inline-cited to the website it came from: `[Website Name](Source URL)`.
+- If the CONTEXT does not contain a source for a claim, do NOT present it as if it were sourced from a specific website. Say it is general knowledge instead (e.g. "as a general rule in the German healthcare system — please verify current details with your Krankenkasse or gesund.bund.de") rather than citing nothing and implying it came from the live search.
+
 GUIDELINES FOR HEALTH POLICY & RIGHTS:
 1. **German GKV Psychotherapy Coverage**:
    - Statutory health insurance (GKV) covers psychotherapy for conditions like depression and anxiety when medically indicated.
@@ -54,7 +58,7 @@ MANDATORY RESPONSE STRUCTURE (YOU MUST STRUCTURE YOUR RESPONSE INTO THESE SECTIO
 1. **Safety Screening & Support** (ONLY if the user displays or mentions anxiety, depression, distress, or potential self-harm):
    - You MUST open your response with a brief risk-screening question: "Are you currently safe, or are you having thoughts of harming yourself?" before explaining any logistical or administrative details.
    - Advise contacting their general practitioner (Hausarzt) or calling the telephone counseling (Telefonseelsorge) numbers: 0800 111 0 111 or 0800 111 0 222 (free, anonymous, 24/7).
-   - In case of acute crisis, call 112 or visit the emergency room at AMEOS Klinikum St. Josef Oberhausen.
+   - Mention the AMEOS Klinikum St. Josef Oberhausen emergency room as an option for acute crisis. Do NOT add a generic "call 112" line here — that is automatically appended once at the end of the final response.
 
 2. **GKV Coverage & Pathways**:
    - Confirm GKV psychotherapy coverage and state the covered modalities.
@@ -74,9 +78,15 @@ MANDATORY RESPONSE STRUCTURE (YOU MUST STRUCTURE YOUR RESPONSE INTO THESE SECTIO
    - Cite the source of these guidelines inline using: `[Source Name](Source URL)` based on the CONTEXT.
 
 4. **Therapists in Oberhausen**:
-   - List the therapists provided in the CONTEXT.
+   - List ONLY the therapists explicitly provided in the CONTEXT. Do NOT invent names, addresses, or phone numbers under any circumstances — if none are provided, say so honestly rather than making one up.
    - Format each therapist as: `[Dr. Name](Profile Link) (Specialization) - Address: ..., Phone: ...`.
    - Remind the user to visit the profile link to check details like availability and spoken languages.
+
+**Response Hygiene**: End your response as soon as section 4 is complete — do NOT add a generic warm closing sign-off (e.g. "take care of yourself", "don't hesitate to reach out"). Your response may be combined with another agent's answer.
+
+EXAMPLES (this is the required format — follow it exactly):
+- Inline citation (section 2/3): "GKV covers up to 12 Akutbehandlung sessions with only a notification requirement [gesund.bund.de](https://gesund.bund.de/psychotherapie)."
+- Therapist listing (section 4): "[Herr Gerhard Bongers](https://www.arzt-auskunft.de/psychiatrie-und-psychotherapie/oberhausen-rheinland/12345) (Facharzt für Psychiatrie und Psychotherapie) - Address: Bahnhofstraße 64, 46145 Oberhausen-Sterkrade, Phone: 02 0866 00 40"
 
 KEY CONTACTS IN OBERHAUSEN:
 - **Sozialamt Oberhausen (Social Welfare Office)**: Schwartzstr. 72, 46045 Oberhausen, ☎ +49 208 825-0
@@ -89,6 +99,7 @@ KEY CONTACTS IN OBERHAUSEN:
 async def run_policy_rights_agent(state: MedBotState) -> MedBotState:
     lang = state.get("user_language", "en")
     user_input = state.get("user_input", "")
+    doctor_search_co_running = "doctor_search" in (state.get("active_intents") or [])
 
     # ── RAG retrieval ──────────────────────────────────────────────────────
     rag_result = await retrieve_policy_context(user_input, language=lang)
@@ -96,7 +107,11 @@ async def run_policy_rights_agent(state: MedBotState) -> MedBotState:
     sources = rag_result.get("sources", [])
 
     # ── Inline Doctor Search Integration ───────────────────────────────────
-    doctor_res = await detect_and_search_doctors_inline(user_input, lang)
+    # Skip when doctor_search_agent already ran as a co-intent this turn (fan-out),
+    # to avoid duplicating the same doctor listings in the merged response.
+    doctor_res = None
+    if not doctor_search_co_running:
+        doctor_res = await detect_and_search_doctors_inline(user_input, lang)
     if doctor_res and doctor_res.get("doctors"):
         docs_list = doctor_res["doctors"]
         doctor_context = "\n\nLOCAL DOCTORS/THERAPISTS FOUND IN OBERHAUSEN (LIVE WEB SEARCH RESULTS):\n"
@@ -115,6 +130,20 @@ async def run_policy_rights_agent(state: MedBotState) -> MedBotState:
         lang_instruction=get_language_instruction(lang),
         context=context[:3500] or "No specific policy documents retrieved.",
     )
+    if doctor_search_co_running:
+        # A sibling doctor_search_agent is already producing a live therapist
+        # listing elsewhere in this merged response — the static "Therapists in
+        # Oberhausen" section (mandatory structure item 4) would otherwise force
+        # an apologetic "no therapists found" line that contradicts it.
+        prompt += (
+            "\n\nIMPORTANT OVERRIDE: A separate live doctor/therapist search is already "
+            "being shown to the user elsewhere in this same response. Your response must "
+            "end after section 3 (Practical Steps). Do NOT write a section 4, do NOT include "
+            "its heading, and do NOT write any placeholder, note, or meta-comment acknowledging "
+            "that section 4 was skipped or handled elsewhere (e.g. never write anything like "
+            "\"(skipped)\" or \"section 4 omitted\") — the user must not see any reference to "
+            "these instructions. Simply stop writing once section 3 is complete."
+        )
 
     try:
         llm = get_llm()
@@ -128,10 +157,11 @@ async def run_policy_rights_agent(state: MedBotState) -> MedBotState:
         answer = "For health rights in Germany, please contact your local Sozialamt or a social welfare organisation like Caritas."
 
     return {
-        **state,
-        "active_agent": "policy_rights_agent",
-        "agent_raw_output": answer,
-        "sources": sources,
-        "needs_disclaimer": False,
-        "is_emergency": False,
+        "agent_outputs": [{
+            "agent": "policy_rights_agent",
+            "output": answer,
+            "sources": sources,
+            "needs_disclaimer": False,
+            "needs_maps": False,
+        }],
     }

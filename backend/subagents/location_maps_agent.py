@@ -80,12 +80,12 @@ async def run_location_maps_agent(state: MedBotState) -> MedBotState:
     ]
 
     return {
-        **state,
-        "active_agent": "location_maps_agent",
-        "agent_raw_output": answer,
-        "sources": sources,
-        "needs_maps": False,
-        "needs_disclaimer": False,
-        "is_emergency": False,
-        "extra_context": {"places": places},
+        "agent_outputs": [{
+            "agent": "location_maps_agent",
+            "output": answer,
+            "sources": sources,
+            "needs_disclaimer": False,
+            "needs_maps": False,
+            "extra": {"places": places},
+        }],
     }

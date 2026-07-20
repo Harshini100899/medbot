@@ -24,6 +24,7 @@ from backend.language.detector import detect_language
 from backend.ontology.normalizer import is_emergency
 from backend.llm_factory import get_llm
 from backend.memory.redis_memory import cache_language, get_cached_language
+from backend.tools.doctor_search_tool import infer_specialisation
 
 logger = logging.getLogger(__name__)
 
@@ -84,6 +85,10 @@ KEYWORD_RULES: Dict[str, list] = {
         "blood sugar", "blutzucker",
         # General "find me" pattern
         "find me",
+        # Therapist / psychotherapist search
+        "therapist", "find a therapist", "find therapist", "psychotherapist",
+        "find a psychotherapist", "counselor", "counsellor",
+        "therapeut", "psychotherapeut", "therapeuten suchen",
     ],
     "location_maps": [
         "how do i get to", "wie komme ich", "directions", "route",
@@ -105,13 +110,77 @@ KEYWORD_RULES: Dict[str, list] = {
 }
 
 
+# Shared cap on how many General Purpose sub-agents can fan out in one turn.
+# Imported by general_purpose_agent.py too, so both the rule-based and LLM
+# classification paths agree on the same limit -- single source of truth
+# instead of two independently-tuned magic numbers.
+MAX_GENERAL_INTENTS = 3
+
+
+def rule_based_subintents(text: str) -> list[str]:
+    """
+    Fast rule-based intent classification — returns every matching General
+    Purpose sub-intent (doctor_search / policy_rights / location_maps /
+    migrant_health), in fixed priority order, deduped and capped at
+    MAX_GENERAL_INTENTS so merged responses stay focused. Does NOT consider
+    emergency — callers that need the Level-1 emergency fast-path should check
+    that separately.
+    """
+    t = text.lower()
+    matched: list[str] = []
+
+    # Priority 1: Explicit keyword match, across all four sub-intent buckets.
+    for intent, keywords in KEYWORD_RULES.items():
+        if intent == "emergency":
+            continue
+        if any(kw in t for kw in keywords) and intent not in matched:
+            matched.append(intent)
+
+    # Priority 2: Heuristic — disease/condition + search context, OR a recognised
+    # medical specialty name anywhere in the message (e.g. "gynecologist",
+    # "physiotherapist", "cardiologist"), triggers doctor_search. The specialty
+    # check reuses infer_specialisation()'s specialty map as the single source of
+    # truth instead of duplicating a separate list of specialist names here —
+    # that exact duplication is what let "gynecologist" (and previously
+    # "physiotherapist") silently fall through the keyword lists before.
+    if "doctor_search" not in matched:
+        CONDITION_WORDS = {
+            "diabetes", "diabetic", "diabetiker", "hypertension", "high blood pressure",
+            "heart disease", "asthma", "cancer", "allergy", "allergie", "arthritis",
+            "depression", "depressed", "anxiety", "anxious", "pain", "schmerz",
+            "fever", "fieber", "illness", "condition", "krankheit", "erkrankung",
+            "symptom",
+        }
+        SEARCH_TRIGGERS = {
+            "find", "suitable", "recommend", "need", "looking", "search",
+            "oberhausen", "arzt", "doctor", "specialist", "klinik", "therapist",
+        }
+        has_condition = any(cw in t for cw in CONDITION_WORDS)
+        has_search = any(sw in t for sw in SEARCH_TRIGGERS)
+        if (has_condition and has_search) or infer_specialisation(text) is not None:
+            matched.append("doctor_search")
+
+    # Priority 3: migrant_health is a specialised superset of policy_rights for
+    # the refugee/migrant persona — it already covers GKV/AsylbLG guidance plus
+    # migrant-specific resources (interpreters, Medibüro, trauma care). Only
+    # drop the generic policy_rights_agent when keeping both would otherwise
+    # squeeze something out of the cap -- with MAX_GENERAL_INTENTS=3 there's
+    # usually room for doctor_search + migrant_health + policy_rights together.
+    if (
+        "migrant_health" in matched
+        and "policy_rights" in matched
+        and len(matched) > MAX_GENERAL_INTENTS
+    ):
+        matched.remove("policy_rights")
+
+    return matched[:MAX_GENERAL_INTENTS]
+
+
 def rule_based_intent(text: str) -> str | None:
     """
-    Fast rule-based intent classification — returns intent or None.
+    Fast rule-based intent classification — returns the primary intent or None.
 
-    Also applies heuristics:
-    - If the message mentions a medical condition AND a "find doctor" trigger, route to doctor_search.
-    - Prioritises emergency detection above all else.
+    Prioritises emergency detection above all else.
     """
     t = text.lower()
 
@@ -119,30 +188,7 @@ def rule_based_intent(text: str) -> str | None:
     if any(kw in t for kw in KEYWORD_RULES["emergency"]):
         return "emergency"
 
-    # Priority 2: Explicit keyword match
-    for intent, keywords in KEYWORD_RULES.items():
-        if intent == "emergency":
-            continue
-        if any(kw in t for kw in keywords):
-            return intent
-
-    # Priority 3: Heuristic — disease/condition + search context triggers doctor_search
-    CONDITION_WORDS = {
-        "diabetes", "diabetic", "diabetiker", "hypertension", "high blood pressure",
-        "heart disease", "asthma", "cancer", "allergy", "allergie", "arthritis",
-        "depression", "anxiety", "pain", "schmerz", "fever", "fieber",
-        "illness", "condition", "krankheit", "erkrankung", "symptom",
-    }
-    SEARCH_TRIGGERS = {
-        "find", "suitable", "recommend", "need", "looking", "search",
-        "oberhausen", "arzt", "doctor", "specialist", "klinik",
-    }
-    has_condition = any(cw in t for cw in CONDITION_WORDS)
-    has_search = any(sw in t for sw in SEARCH_TRIGGERS)
-    if has_condition and has_search:
-        return "doctor_search"
-
-    return None
+    return next(iter(rule_based_subintents(text)), None)
 
 
 def rule_based_top_route(text: str) -> str | None:

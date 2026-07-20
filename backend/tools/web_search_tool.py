@@ -5,10 +5,19 @@ Supports targeted searches across trusted German medical/health domains.
 from __future__ import annotations
 import logging
 from typing import List, Dict, Any, Optional
+from urllib.parse import urlparse
 
 from backend.config import settings
 
 logger = logging.getLogger(__name__)
+
+
+def _matches_domain(url: str, allowed_domains: List[str]) -> bool:
+    """True if url's host is one of allowed_domains or a subdomain of one."""
+    host = urlparse(url).netloc.lower()
+    if host.startswith("www."):
+        host = host[4:]
+    return any(host == d or host.endswith("." + d) for d in allowed_domains)
 
 # ─── Trusted medical websites ─────────────────────────────────────────────────
 DOCTOR_SEARCH_DOMAINS = [
@@ -33,6 +42,14 @@ POLICY_DOMAINS = [
     "bundesgesundheitsministerium.de",
     "kvno.de",
     "kvwl.de",
+]
+
+MIGRANT_HEALTH_DOMAINS = [
+    "handbookgermany.de",
+    "bamf.de",
+    "diakonie.de",
+    "caritas.de",
+    "gesund.bund.de",
 ]
 
 
@@ -71,19 +88,24 @@ async def web_search(
             response = await asyncio.wait_for(client.search(**kwargs), timeout=10.0)
             results = response.get("results", [])
         except Exception as search_err:
-            logger.warning(f"Initial domain-restricted search failed: {search_err}")
+            logger.warning(f"Domain-restricted search failed: {search_err}")
             results = []
 
-        # Fallback to unrestricted search if restricted returned nothing
+        # Tavily's include_domains is a bias, not a strict filter -- empirically
+        # it "tops up" with out-of-domain results when too few in-domain matches
+        # exist for max_results. Enforce the restriction ourselves so answers
+        # can only ever be sourced from the given trusted domains.
+        if include_domains:
+            before = len(results)
+            results = [r for r in results if _matches_domain(r.get("url", ""), include_domains)]
+            if len(results) < before:
+                logger.info(
+                    f"Filtered {before - len(results)} out-of-domain result(s) not in "
+                    f"{include_domains} for query: {query!r}"
+                )
+
         if not results and include_domains:
-            logger.info("Restricted search returned no results. Retrying without domain restriction.")
-            kwargs.pop("include_domains", None)
-            try:
-                response = await asyncio.wait_for(client.search(**kwargs), timeout=10.0)
-                results = response.get("results", [])
-            except Exception as fallback_err:
-                logger.error(f"Fallback search failed: {fallback_err}")
-                results = []
+            logger.info(f"No results from trusted domains {include_domains} for query: {query!r}")
 
         return [
             {
@@ -136,4 +158,14 @@ async def policy_web_search(query: str, language: str = "en") -> List[Dict]:
         max_results=4,
         search_depth="advanced",
         include_domains=POLICY_DOMAINS,
+    )
+
+
+async def migrant_health_web_search(query: str, language: str = "en") -> List[Dict]:
+    """Search for migrant/refugee-specific health and integration guidance on trusted domains."""
+    return await web_search(
+        query,
+        max_results=4,
+        search_depth="advanced",
+        include_domains=MIGRANT_HEALTH_DOMAINS,
     )
